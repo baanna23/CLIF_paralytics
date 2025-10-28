@@ -1,0 +1,1294 @@
+---
+title: "CLIF_paralytics_incidence_analysis"
+---
+#This File is Run AFTER the Cohort Identification R Markdown ('cohort_identification_paralytics_incidence.Rmd')
+#Specify File Paths, Project Path and Site - SITE SPECIFIC
+#Load the Analytic File
+```{r}
+
+site_time_zone <-"America/New_York" #Add your local time zone prior to UTC conversion, options for this Analysis are EST = 'America/New_York', CST = 'America/Chicago', PST = 'America/Los_Angeles' 
+tables_location <-"Z:/barker/clif_3_22/CLIF-2.0.0-dttm-update-R"
+project_location <-"Z:/barker/clif_paralytics" #Add local path to project location, where results will output
+site <-"Michigan" #Add local site name
+file_type <-"parquet" #Options are "parquet" or "csv"
+
+check_timezone <- function(site_timezone, intended_timezone = Sys.timezone()) {
+  if (site_timezone != intended_timezone) {
+    cat("Warning: You specified", site_timezone, "but your system time zone is", intended_timezone, "\n")
+    response <- readline(prompt = "Was that intentional? (yes/no): ")
+    
+    if (tolower(response) %in% c("no", "n")) {
+      new_timezone <- readline(prompt = "Please enter the correct timezone: ")
+      cat("Timezone updated to", new_timezone, "\n")
+      return(new_timezone)
+    } else {
+      cat("Proceeding with the originally specified timezone:", site_timezone, "\n")
+      return(site_timezone)
+    }
+    
+  } else {
+    cat("Timezone is set to", site_timezone, "\n")
+    return(site_timezone)
+  }
+}
+
+
+#Time Zone Check
+result <- check_timezone(site_time_zone)
+```
+
+```{r Load Needed Libraries, include=FALSE}
+packages <- c("lubridate", 
+              "tidyverse", 
+              "dplyr",
+              "tableone", 
+              "readxl", 
+              "arrow", 
+              "collapse", 
+              "data.table",
+              "viridis",
+              "sandwich", #Cluster Robust Standard Errors
+              "lmtest"  #Allows Calculation of Cluster Robust Standard Errors
+              #"marginaleffects"
+              ) #Predictions and Average Slopes for Average Marginal Effects
+
+install_if_missing <- function(package) {
+  if (!require(package, character.only = TRUE)) {
+    install.packages(package, dependencies = TRUE)
+    library(package, character.only = TRUE)
+  }
+}
+
+sapply(packages, install_if_missing)
+rm(packages, install_if_missing)
+
+#Use Dplyr select as default
+select <- dplyr::select
+
+#Create Sub Folders for Graphs within Project Output Folder
+# Check if the output directory exists; if not, create it
+if (!dir.exists(paste0(project_location, "/project_output/graphs"))) {
+  dir.create(paste0(project_location, "/project_output/graphs"))
+}
+
+```
+
+```{r Function to Convert Datetimes to Local Time Zone}
+#Write Function to Convert Datetime Columns to 'UTC'
+fn.timezone_tolocal <- function(df) {
+  # Get the dataset schema
+  sch <- df$schema
+  #Which Fields are Datetime Types?
+  datetime_fields <- keep(sch$fields, function(field) {
+    grepl("^timestamp", field$type$ToString())
+  })
+  # Extract the names of these datetime columns
+  datetime_cols <- map_chr(datetime_fields, "name")
+  
+  #Now Convert DateTime Columns to Local Timezone
+  df <- df %>%
+    mutate(across(all_of(datetime_cols), ~ cast(.x, arrow::timestamp("us", site_time_zone)))) |>
+    compute()
+}
+```
+
+
+
+```{r Load Site-specific analytic data set and Convert to Local Time Zone}
+#NOTE: This Table is Created by the prior script
+general_analytic_df <- open_dataset(paste0(project_location, '/project_tables/rose_analytic_data.parquet')) 
+
+#Apply Function to Convert to Local Timezone
+general_analytic_df <- fn.timezone_tolocal(general_analytic_df)
+  
+set.seed(32284) #For Reproducibility
+
+#Bring Into R Environment as 2 Dataframes - one more recent data, without meeting all ROSE eligibility criteria and other strictly rose
+#For patient_ids with more than one encounter block, select one at random
+current_analytic_df <- general_analytic_df |> 
+  filter(final_admission_dttm>= "2022-01-01 00:00:00" & final_admission_dttm< "2025-01-01 00:00:00") |>
+  collect() |>
+  group_by(patient_id) |>
+  slice_sample(n=1) |>
+  ungroup()
+  
+rose_analytic_df <- general_analytic_df |> 
+  filter(!is.na(days_admit_to_enroll)) |>
+   #Final Exclusion, if proned at time of meeting criteria
+  mutate(tv_cc_kg=set_tv_enrollment / study_weight_kg, 
+  early_prone = fifelse(as.POSIXct(first_prone_time) <= as.POSIXct(t_rose_first), 1, 0), 
+  prone_6 = (as.POSIXct(first_prone_time)<=as.POSIXct(t_rose_first)+dhours(6)), 
+  LPV = case_when(tv_cc_kg <=8~1, tv_cc_kg>8~0), 
+  deep_rass = case_when(is.na(min_rass) | min_rass< -3~1, min_rass>-4~0),
+  ph_bad_cat = case_when(is.na(min_ph) | min_ph >=7.2 ~0, min_ph <7.2~1), 
+  code_status_presume = fifelse(!is.na(code_status_category), code_status_category, "Full"), 
+  code_status_partial = fifelse(tolower(code_status_name)=="partial" | tolower(code_status_name)=="partial code",  1, 0)) |>
+  filter(is.na(early_prone) | early_prone==0)|>
+  collect()
+
+location <- as.data.frame(table(rose_analytic_df$enrollment_location_type, useNA = "always"))
+write_csv(location, paste0(project_location, '/project_output/aggregate_location.csv'))
+
+
+aggregate_code_status<-as.data.frame(table(rose_analytic_df$code_status_presume, rose_analytic_df$code_status_partial, useNA = "always")) # if missing at time meet criteria then presume full. 
+write_csv(aggregate_code_status, paste0(project_location, '/project_output/aggregate_code_status.csv'))
+
+rose_analytic_df <- rose_analytic_df |>
+  mutate(covid_positive =case_when(sars_cov2_positive == '1'~1, is.na(sars_cov2_positive) | sars_cov2_positive=='0'   ~0),
+      enrollment_location_type = case_when(
+      enrollment_location_type %in% c("general_icu", "mixed_cardiothoracic_icu") ~ "general_icu",
+      enrollment_location_type == "cardiac_icu" ~ "cardiac_icu",
+      enrollment_location_type %in% c("cardiothoracic_surgical_icu", "surgical_icu", "burn_icu") ~ "surgical_icu",
+      enrollment_location_type %in% c("neuro_icu", "neurosurgical_icu", "mixed_neuro_icu") ~ "mixed_neuro_icu",
+      enrollment_location_type == "medical_icu" ~ "medical_icu"))
+
+#For patient_ids with more than one encounter block, select one at random
+rose_analytic_df <- rose_analytic_df |>
+  #Filter Out Those with t_enrollment in 2025
+  filter(year(t_rose_first)<2025) |>
+  group_by(patient_id) |>
+  slice_sample(n=1) |>
+  ungroup()
+
+cat('At', site, length(unique(rose_analytic_df$patient_id)), 'met cohort eligibility based on ROSE criteria and are included in the final cohort. \n')
+
+```
+
+
+#Additional Cleaning of Analytic Dataset
+#Includes Finalzing Covariates
+```{r Define Study Months/Quarters}
+#Further Define sex_category as female 1, male/other/unknown 0
+rose_analytic_df <- rose_analytic_df |>
+  mutate(female=fifelse(tolower(sex_category)=='female', 1, 0), 
+         year=year(t_rose_first),
+         calendar_month=month(t_rose_first), 
+         qualify_intermittent=case_when(criteria_to_paralytic_i_rose<=48 & criteria_to_paralytic_i_rose>=0~1),
+         qualify_intermittent=fifelse(!is.na(qualify_intermittent), qualify_intermittent, 0),
+         qualify_continuous=case_when(criteria_to_paralytic_c<=48 & criteria_to_paralytic_c>=-3~1),
+         qualify_continuous=fifelse(!is.na(qualify_continuous), qualify_continuous, 0)) |>
+  arrange(year, calendar_month)
+
+#Report Out Minimum and Maximum Times
+cat('At', site, 'the first eligible patient was enrolled on', as.character(first(rose_analytic_df$t_rose_first)), 
+    '\n and the last on', as.character(last(rose_analytic_df$t_rose_first)))
+
+#Create a Study Month Data Frame to Merge to Create Study Month; Can Adjust ym() to accomadte desired period; for this analysis 2018 through 2024
+study_month <- data.frame(start_date=seq(ym("201801"), ym("202412"), by= "months")) |>
+  mutate(calendar_month=month(start_date)) |>
+  mutate(year=year(start_date)) |>
+  arrange(year, calendar_month) |>
+  mutate(study_month=seq(1:n())) |>
+  select(-start_date) |>
+  mutate(study_quarter=ceiling(study_month/3))
+
+#Now Merge to paralytics Analytic_DF
+rose_analytic_df <- rose_analytic_df |>
+  left_join(study_month) 
+ 
+#Define the Pre-Specified Study Periods
+#Jan 2018-June 2019 'Pre-ROSE', July 2019-December 2024 'Post-ROSE'
+rose_analytic_df <- rose_analytic_df |>
+  filter(year<2025 & year>2017) |>
+  mutate(study_period=fcase(
+    study_month>=1 & study_month<19, 'Pre-ROSE',
+    study_month>=19, 'Post-ROSE'
+  )) |>
+  mutate(study_period_cat=factor(study_period,
+                               levels = c("Pre-ROSE", "Post-ROSE"),
+                               labels = c(0, 1)))
+
+#In this script we keep track of the minimum and maximum study month both for graphs and for the modelling
+min_month <- min(rose_analytic_df$study_month)
+max_month <- max(rose_analytic_df$study_month)
+min_quarter <- min(rose_analytic_df$study_quarter)
+max_quarter <- max(rose_analytic_df$study_quarter)
+
+#Create 'site_type' vector that shows Which study periods are Included
+site_type <- rose_analytic_df |>
+  distinct(study_period) 
+site_type <- paste(site_type$study_period, collapse = ",")
+
+#Keep Track of the Number of Hospitals
+n_hospitals <- length(unique(rose_analytic_df$hospital_id[!is.na(rose_analytic_df$hospital_id)]))
+
+#Create a Few More Variables
+rose_analytic_df <- rose_analytic_df |>
+  mutate(admit_to_enrolled=as.duration(t_rose_first-final_admission_dttm)/dhours(1)) |>
+  mutate(ett_to_enrolled=as.duration(t_rose_first-vent_episode_start)/dhours(1)) |>
+  mutate(severe_ards=fifelse(first_rose_pf_all<100, 1, 0))
+
+#Create a 'Unknown' Category for SARS COV2 - This is if we can't confirm a positive or negative SARS-Cov2 test in the COVID or Post-COVID era
+rose_analytic_df <- rose_analytic_df |>
+ mutate(sars_cov2_positive=case_when(
+   sars_cov2_positive==1~ 'Positive',
+   study_month>=1 & study_month<28~ 'Pre-COVID',  #If less than April 2020, consider pre-covid
+   sars_cov2_positive==0 | is.na(sars_cov2_positive)~ 'Negative',
+ ))
+```
+
+
+```{r Describe The Number of Admissions Per Month, Admissions Per Period}
+#Create a Table of N of Patients and Number paralyticsd Per Study Month
+paralytics_per_month <- rose_analytic_df |> 
+  group_by(study_month) |>
+  summarise(
+    'site' = site,
+    'n_hospitals' = n_hospitals,
+    'year' = mean(year),
+    'calendar_month' = mean(calendar_month),
+    'study_period' = max(study_period),
+    'n_patients' = n(),
+    'n_paralytics_12_hr' = sum(any_paralytic_12),
+    'paralytics_12_hr_percent' = mean(any_paralytic_12),
+    'standard_error_12' = sqrt(mean(any_paralytic_12) * (1 - mean(any_paralytic_12)) / n()),
+    'n_paralytics_24_hr' = sum(any_paralytic_24),
+    'paralytics_24_hr_percent' = mean(any_paralytic_24),
+    'standard_error_24' = sqrt(mean(any_paralytic_24) * (1 - mean(any_paralytic_24)) / n()),
+    'n_paralytics_48_hr' = sum(any_paralytic_48),
+    'paralytics_48_hr_percent' = mean(any_paralytic_48),
+    'standard_error_48' = sqrt(mean(any_paralytic_48) * (1 - mean(any_paralytic_48)) / n()),
+    'n_paralytics_72_hr' = sum(any_paralytic_72),
+    'paralytics_72_hr_percent' = mean(any_paralytic_72),
+    'standard_error_72' = sqrt(mean(any_paralytic_72) * (1 - mean(any_paralytic_72)) / n()),
+    'n_paralytics_all' = sum(any_paralytic_ever),
+    'paralytics_percent_all' = mean(any_paralytic_ever),
+    'standard_error_all' = sqrt(mean(any_paralytic_ever) * (1 - mean(any_paralytic_ever)) / n())
+  ) |>
+  relocate(site, n_hospitals, .before = study_month)
+#Save Locally At Each Site but Don't Export as May have 1 Patient Per Month
+write_csv(paralytics_per_month, paste0(project_location, '/project_output/', site,'_paralytics_per_month.csv'))
+
+#Create a Table of N of Patients and Number paralyzed Per Study Month Per Hospital
+paralytics_per_month_by_hospital <- rose_analytic_df |> 
+  group_by(study_month, hospital_id) |>
+  summarise(
+    'site' = site,
+    'n_hospitals' = n_hospitals,
+    'year' = mean(year),
+    'calendar_month' = mean(calendar_month),
+    'study_period' = max(study_period),
+    'n_patients' = n(),
+    'n_paralytics_12_hr' = sum(any_paralytic_12),
+    'paralytics_12_hr_percent' = mean(any_paralytic_12),
+    'standard_error_12' = sqrt(mean(any_paralytic_12) * (1 - mean(any_paralytic_12)) / n()),
+    'n_paralytics_24_hr' = sum(any_paralytic_24),
+    'paralytics_24_hr_percent' = mean(any_paralytic_24),
+    'standard_error_24' = sqrt(mean(any_paralytic_24) * (1 - mean(any_paralytic_24)) / n()),
+    'n_paralytics_48_hr' = sum(any_paralytic_48),
+    'paralytics_48_hr_percent' = mean(any_paralytic_48),
+    'standard_error_48' = sqrt(mean(any_paralytic_48) * (1 - mean(any_paralytic_48)) / n()),
+    'n_paralytics_72_hr' = sum(any_paralytic_72),
+    'paralytics_72_hr_percent' = mean(any_paralytic_72),
+    'standard_error_72' = sqrt(mean(any_paralytic_72) * (1 - mean(any_paralytic_72)) / n()),
+    'n_paralytics_all' = sum(any_paralytic_ever),
+    'paralytics_percent_all' = mean(any_paralytic_ever),
+    'standard_error_all' = sqrt(mean(any_paralytic_ever) * (1 - mean(any_paralytic_ever)) / n())
+  ) |>
+  relocate(site, n_hospitals, .before = study_month)
+write_csv(paralytics_per_month_by_hospital, paste0(project_location, '/project_output/', site,'_paralytics_per_month_hospital.csv'))
+
+
+#Repeat Per Study Period
+paralytics_per_period <- rose_analytic_df |> 
+  group_by(study_period) |>
+  summarise(
+    'site' = site,
+    'n_hospitals' = n_hospitals,
+    'n_patients' = n(),
+    'n_paralytics_12_hr' = sum(any_paralytic_12),
+    'paralytics_12_hr_percent' = mean(any_paralytic_12),
+    'standard_error_12' = sqrt(mean(any_paralytic_12) * (1 - mean(any_paralytic_12)) / n()),
+    'n_paralytics_24_hr' = sum(any_paralytic_24),
+    'paralytics_24_hr_percent' = mean(any_paralytic_24),
+    'standard_error_24' = sqrt(mean(any_paralytic_24) * (1 - mean(any_paralytic_24)) / n()),
+    'n_paralytics_48_hr' = sum(any_paralytic_48),
+    'paralytics_48_hr_percent' = mean(any_paralytic_48),
+    'standard_error_48' = sqrt(mean(any_paralytic_48) * (1 - mean(any_paralytic_48)) / n()),
+    'n_paralytics_72_hr' = sum(any_paralytic_72),
+    'paralytics_72_hr_percent' = mean(any_paralytic_72),
+    'standard_error_72' = sqrt(mean(any_paralytic_72) * (1 - mean(any_paralytic_72)) / n()),
+    'n_paralytics_all' = sum(any_paralytic_ever),
+    'paralytics_percent_all' = mean(any_paralytic_ever),
+    'standard_error_all' = sqrt(mean(any_paralytic_ever) * (1 - mean(any_paralytic_ever)) / n())
+  ) |>
+  relocate(site, n_hospitals, .before = study_period)
+write_csv(paralytics_per_period, paste0(project_location, '/project_output/', site,'_paralytics_per_period.csv'))
+
+#Repeat Per Study Quarter
+paralytics_per_quarter <- rose_analytic_df |> 
+  group_by(study_quarter) |>
+  summarise(
+    'site' = site,
+    'n_hospitals' = n_hospitals,
+    'study_period' = max(study_period),
+    'n_patients' = n(),
+    'sars_cov2_positive' = sum(sars_cov2_positive=='Positive', na.rm=T),
+   'n_paralytics_12_hr' = sum(any_paralytic_12),
+    'paralytics_12_hr_percent' = mean(any_paralytic_12),
+    'standard_error_12' = sqrt(mean(any_paralytic_12) * (1 - mean(any_paralytic_12)) / n()),
+    'n_paralytics_24_hr' = sum(any_paralytic_24),
+    'paralytics_24_hr_percent' = mean(any_paralytic_24),
+    'standard_error_24' = sqrt(mean(any_paralytic_24) * (1 - mean(any_paralytic_24)) / n()),
+    'n_paralytics_48_hr' = sum(any_paralytic_48),
+    'paralytics_48_hr_percent' = mean(any_paralytic_48),
+    'standard_error_48' = sqrt(mean(any_paralytic_48) * (1 - mean(any_paralytic_48)) / n()),
+    'n_paralytics_72_hr' = sum(any_paralytic_72),
+    'paralytics_72_hr_percent' = mean(any_paralytic_72),
+    'standard_error_72' = sqrt(mean(any_paralytic_72) * (1 - mean(any_paralytic_72)) / n()),
+    'n_paralytics_all' = sum(any_paralytic_ever),
+    'paralytics_percent_all' = mean(any_paralytic_ever),
+    'standard_error_all' = sqrt(mean(any_paralytic_ever) * (1 - mean(any_paralytic_ever)) / n())
+   ) |>
+  relocate(site, n_hospitals, .before = study_quarter)
+write_csv(paralytics_per_quarter, paste0(project_location, '/project_output/', site,'_paralytics_per_quarter.csv'))
+
+#Repeat Per Study Period and sars_cov2_status
+paralytics_per_quarter_sarscov2 <- rose_analytic_df |> 
+  mutate(sars_cov2_positive=fcase(
+    sars_cov2_positive=='Positive', 'COVID', 
+    default = 'Not COVID'
+  )) |>
+  group_by(study_quarter, sars_cov2_positive) |>
+  summarise(
+    'site' = site,
+    'n_hospitals' = n_hospitals,
+    'study_period' = max(study_period),
+    'n_patients' = n(),
+    'n_paralytics_12_hr' = sum(any_paralytic_12),
+    'paralytics_12_hr_percent' = mean(any_paralytic_12),
+    'standard_error_12' = sqrt(mean(any_paralytic_12) * (1 - mean(any_paralytic_12)) / n()),
+    'n_paralytics_24_hr' = sum(any_paralytic_24),
+    'paralytics_24_hr_percent' = mean(any_paralytic_24),
+    'standard_error_24' = sqrt(mean(any_paralytic_24) * (1 - mean(any_paralytic_24)) / n()),
+    'n_paralytics_48_hr' = sum(any_paralytic_48),
+    'paralytics_48_hr_percent' = mean(any_paralytic_48),
+    'standard_error_48' = sqrt(mean(any_paralytic_48) * (1 - mean(any_paralytic_48)) / n()),
+    'n_paralytics_72_hr' = sum(any_paralytic_72),
+    'paralytics_72_hr_percent' = mean(any_paralytic_72),
+    'standard_error_72' = sqrt(mean(any_paralytic_72) * (1 - mean(any_paralytic_72)) / n()),
+    'n_paralytics_all' = sum(any_paralytic_ever),
+    'paralytics_percent_all' = mean(any_paralytic_ever),
+    'standard_error_all' = sqrt(mean(any_paralytic_ever) * (1 - mean(any_paralytic_ever)) / n())
+      ) |>
+  relocate(site, n_hospitals, .before = sars_cov2_positive)
+write_csv(paralytics_per_quarter_sarscov2, paste0(project_location, '/project_output/', site,'_paralytics_per_quarter-sarscoV2_status.csv'))
+
+#Create a Histogram of Admissions Per Study Month by Hospital
+#Create Month Labels - Will Use Study Specific Min and Max Months to Select The Right Grouping
+month_labels <- c(
+'Jan18', 'Feb18', 'Mar18','Apr18', 
+'May18', 'Jun18', 'Jul18', 'Aug18',
+'Sep18', 'Oct18', 'Nov18', 'Dec18',
+'Jan19', 'Feb19', 'Mar19','Apr19', 
+'May19', 'Jun19', 'Jul19', 'Aug19',
+'Sep19', 'Oct19', 'Nov19', 'Dec19',
+'Jan20', 'Feb20', 'Mar20','Apr20', 
+'May20', 'Jun20', 'Jul20', 'Aug20',
+'Sep20', 'Oct20', 'Nov20', 'Dec20',
+'Jan21', 'Feb21', 'Mar21','Apr21', 
+'May21', 'Jun21', 'Jul21', 'Aug21',
+'Sep21', 'Oct21', 'Nov21', 'Dec21',
+'Jan22', 'Feb22', 'Mar22','Apr22', 
+'May22', 'Jun22', 'Jul22', 'Aug22',
+'Sep22', 'Oct22', 'Nov22', 'Dec22',
+'Jan23', 'Feb23', 'Mar23', 'Apr23', 
+'May23', 'Jun23', 'Jul23', 'Aug23', 
+'Sep23', 'Oct23', 'Nov23', 'Dec23',
+'Jan24', 'Feb24', 'Mar24', 'Apr24', 
+'May24', 'Jun24', 'Jul24', 'Aug24', 
+'Sep24', 'Oct24', 'Nov24', 'Dec24')
+
+#Select the Relevant Months from This Vector Using the min_month, max_month
+site_month_labels <- month_labels[min_month:max_month]
+max_monthly_n <- max(paralytics_per_month$n_patients)
+
+#Plot of Enrollments Per Month
+ggplot(rose_analytic_df, aes(x=study_month, fill=hospital_id)) +
+  geom_bar(position = 'stack') +
+  theme_classic() +
+  scale_x_continuous(breaks=seq(min_month, max_month, by=1), limits = c(min_month, max_month),
+                     labels = site_month_labels,
+                     name = 'Month-Year') +
+  theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust = 1, size = 4.75)) +
+  scale_y_continuous(name = 'Number of Admissions') +
+  scale_fill_viridis_d()
+ggsave(paste0(site, '_enrollment_per_month.pdf'),
+       path = paste0(project_location, '/project_output/graphs/'))
+
+#Now Plot by sars_cov2_status
+ggplot(rose_analytic_df, aes(x=study_month, fill=factor(sars_cov2_positive))) +
+  geom_bar(position = 'stack') +
+  theme_classic() +
+  scale_x_continuous(breaks=seq(min_month, max_month, by=1), limits = c(min_month, max_month),
+                     labels = site_month_labels,
+                     name = 'Month-Year') +
+  theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust = 1, size = 4.75)) +
+  scale_y_continuous(name = 'Number of Admissions') +
+  scale_fill_viridis_d()
+ggsave('admits_by_month_by_covid.pdf',
+       path = paste0(project_location, '/project_output/graphs/'))
+
+```
+
+```{r Table 1 by Period and By Hospital}
+#Variables to Table 1
+to_tab <- c(
+  'age_at_admission',
+  'female',
+  'race_ethnicity',
+  'bmi',
+  'hospital_id',
+  'year',
+  'study_period',
+  'sars_cov2_positive',
+  'admit_to_enrolled', 
+  'ett_to_enrolled',
+  'or_before_enrollment',
+  'first_rose_pf_all',
+  'first_rose_fio2',
+  'first_rose_peep',
+  'severe_ards',
+  'first_rose_mode',
+  'sofa_score',
+  'nee_pressor_dose',
+  'criteria',
+  'deep_rass',
+  'rr_diff_max',
+  'tv_cc_kg',
+  'mv_obs_max',
+  'plat_max',
+  'compliance_min',
+  'enrollment_location_type',
+  'qualify_intermittent',
+  'qualify_continuous', 
+  'code_status_presume'
+)
+
+#Factor Variables
+factors_tab <- c(
+  'female',
+  'race_ethnicity',
+  'hospital_id',
+  'year',
+  'study_period',
+  'sars_cov2_positive',
+  'or_before_enrollment',
+  'nee_pressor_dose',
+  'severe_ards',
+  'first_rose_mode',
+  'criteria',
+  'deep_rass',
+  'enrollment_location_type',
+  'qualify_intermittent',
+  'qualify_continuous',
+  'code_status_presume'
+)
+
+#First Create Table with Ranges and Additional Statistics Including Numbers of Missing and Min/Max
+tab1 <- CreateTableOne(vars = to_tab, data=rose_analytic_df, factorVars = factors_tab)
+summary(tab1) 
+
+#Now Create a Traditional Table 1, One Stratified by Period and One Stratified by Hospital
+tab1 <- CreateTableOne(vars = to_tab, strata="any_paralytic_48", data=rose_analytic_df, factorVars = factors_tab, addOverall = TRUE) 
+print(tab1)
+tab1_excel <- as.data.frame(print(tab1, printToggle = FALSE, missing = TRUE)) |>
+  mutate(site = site) |>
+  relocate(site, .before = Overall) |>
+  rownames_to_column('characteristic') |>
+  rename(percent_missing = Missing) |>
+  select(-test)
+write.csv(tab1_excel, file=paste0(project_location, '/project_output/', site, '_Table1_by_Paralytics.csv'))
+rm(tab1_excel)
+
+#Now Table 1 stratified by pre/post-ROSE study period
+tab1 <- CreateTableOne(vars = to_tab, strata="study_period", data=rose_analytic_df, factorVars = factors_tab, addOverall = TRUE) 
+print(tab1)
+tab1_excel <- as.data.frame(print(tab1, printToggle = FALSE, missing = TRUE)) |>
+  mutate(site = site) |>
+  relocate(site, .before = Overall) |>
+  rownames_to_column('characteristic') |>
+  rename(percent_missing = Missing) |>
+  select(-test)
+write.csv(tab1_excel, file=paste0(project_location, '/project_output/', site, '_Table1_by_Period.csv'))
+rm(tab1_excel)
+
+#Now Table 1, One Stratified by Hospital
+if (n_hospitals>1) {
+tab1 <- CreateTableOne(vars = to_tab, strata="hospital_id", data=rose_analytic_df, factorVars = factors_tab, addOverall = TRUE) 
+print(tab1)
+tab1_excel <- as.data.frame(print(tab1, printToggle = FALSE, missing = TRUE)) |>
+  mutate(site = site) |>
+  relocate(site, .before = Overall) |>
+  rownames_to_column('characteristic') |>
+  rename(percent_missing = Missing) |>
+  select(-test)
+} else {
+tab1 <- CreateTableOne(vars = to_tab, data=rose_analytic_df, factorVars = factors_tab, addOverall = TRUE) 
+print(tab1)
+tab1_excel <- as.data.frame(print(tab1, printToggle = FALSE, missing = TRUE)) |>
+  mutate(site = site) |>
+  relocate(site, .before = Overall) |>
+  rownames_to_column('characteristic') |>
+  rename(percent_missing = Missing)
+}
+write.csv(tab1_excel, file=paste0(project_location, '/project_output/', site, '_Table1_by_Hospital.csv'))
+rm(tab1_excel)
+
+```
+
+```{r Visualize Paralytics Over Time}
+#Graph the Proning Rate by Study Quarter with Error Bars for Standard Error
+#Create Labels for Study Quarter
+quarter_labels <- c(
+'2018:1-3', '2018:4-6', '2018:7-9', '2018:10-12',
+'2019:1-3', '2019:4-6', '2019:7-9', '2019:10-12',
+'2020:1-3', '2020:4-6', '2020:7-9', '2020:10-12',
+'2021:1-3', '2021:4-6', '2021:7-9', '2021:10-12',
+'2022:1-3', '2022:4-6', '2022:7-9', '2022:10-12',
+'2023:1-3', '2023:4-6', '2023:7-9', '2023:10-12',
+'2024:1-3', '2024:4-6', '2024:7-9', '2024:10-12')
+study_quarter_labels <- quarter_labels[min_quarter:max_quarter]
+
+base_plot <- ggplot(paralytics_per_quarter, aes(x=study_quarter, y=paralytics_48_hr_percent)) +
+  geom_errorbar(aes(ymin = paralytics_48_hr_percent - standard_error_48, ymax = paralytics_48_hr_percent + 
+                      standard_error_48), width = 0.1, alpha = 0.5, color = 'grey') +
+  geom_point() +
+  geom_line() +
+  scale_y_continuous(breaks=seq(0,1, by=0.1), 
+                     labels = scales::percent, 
+                     limits = c(0,1.0),
+                     name = 'Paralyzed within 48 Hours of Meeting Study Criteria') +
+  scale_x_continuous(breaks=seq(min_quarter, max_quarter, by=1),
+                     labels = study_quarter_labels,
+                     limits = c(min_quarter, max_quarter),
+                     name = 'Year: Months') +
+  theme_classic() + # theme_classic call
+  theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust = 1)) # custom x-axis text
+
+#Now Add Annotations and Vertical Lines to Plot Based on What Data a Site Has Contributed
+if (site_type == "Pre-ROSE,Post-ROSE") { #If Site Has Full Study Period (2018-2023)
+  extended <- base_plot +
+    geom_vline(xintercept = 7, linetype = 2) +
+    annotate("text", x=3.333333, y=0.95, label = 'Pre-ROSE') +
+    annotate("text", x=18, y=0.95, label = 'Post-ROSE') 
+} else if (site_type == "Post-ROSE") {
+  extended <- base_plot + 
+    geom_vline(xintercept = 7, linetype = 2) +
+    annotate("text", x=18, y=0.95, label = 'Post-ROSE') 
+} else {
+  extended <- base_plot
+}
+# Display the extended plot
+extended
+ggsave(paste0(site, '_paralytics_by_quarter_48.pdf'),
+       path = paste0(project_location, '/project_output/graphs/'))
+
+#Repeat for paralytics within 24h
+base_plot_24 <- ggplot(paralytics_per_quarter, aes(x=study_quarter, y=paralytics_24_hr_percent)) +
+  geom_errorbar(aes(ymin = paralytics_24_hr_percent - standard_error_24, ymax = paralytics_24_hr_percent + 
+                      standard_error_24), width = 0.1, alpha = 0.5, color = 'grey') +
+  geom_point() +
+  geom_line() +
+  scale_y_continuous(breaks=seq(0,1, by=0.1), 
+                     labels = scales::percent, 
+                     limits = c(0,1.0),
+                     name = 'Paralyzed within 24 Hours of Meeting Study Criteria') +
+  scale_x_continuous(breaks=seq(min_quarter, max_quarter, by=1),
+                     labels = study_quarter_labels,
+                     limits = c(min_quarter, max_quarter),
+                     name = 'Year: Months') +
+  theme_classic() + # theme_classic call
+  theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust = 1)) # custom x-axis text
+
+#Now Add Annotations and Verticle Lines to Plot Based on What Data a Site Has Contributed
+if (site_type == "Pre-ROSE,Post-ROSE") { #If Site Has Full Study Period (2018-2023)
+  extended <- base_plot_24 +
+    geom_vline(xintercept = 7, linetype = 2) +
+    annotate("text", x=3.333333, y=0.95, label = 'Pre-ROSE') +
+    annotate("text", x=18, y=0.95, label = 'Post-ROSE') 
+} else if (site_type == "Post-ROSE") {
+  extended <- base_plot_24 + 
+    geom_vline(xintercept = 7, linetype = 2) +
+    annotate("text", x=18, y=0.95, label = 'Post-ROSE') 
+} else {
+  extended <- base_plot_24
+}
+# Display the extended plot
+extended
+ggsave(paste0(site, '_paralytics_by_quarter_24.pdf'),
+       path = paste0(project_location, '/project_output/graphs/'))
+
+
+#Repeat for paralytics within 72h 
+base_plot_72 <- ggplot(paralytics_per_quarter, aes(x=study_quarter, y=paralytics_72_hr_percent)) +
+  geom_errorbar(aes(ymin = paralytics_72_hr_percent - standard_error_72, ymax = paralytics_72_hr_percent + 
+                      standard_error_72), width = 0.1, alpha = 0.5, color = 'grey') +
+  geom_point() +
+  geom_line() +
+  scale_y_continuous(breaks=seq(0,1, by=0.1), 
+                     labels = scales::percent, 
+                     limits = c(0,1.0),
+                     name = 'Paralyzed within 72 Hours of Meeting Study Criteria') +
+  scale_x_continuous(breaks=seq(min_quarter, max_quarter, by=1),
+                     labels = study_quarter_labels,
+                     limits = c(min_quarter, max_quarter),
+                     name = 'Year: Months') +
+  theme_classic() + # theme_classic call
+  theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust = 1)) # custom x-axis text
+
+#Now Add Annotations and Verticle Lines to Plot Based on What Data a Site Has Contributed
+if (site_type == "Pre-ROSE,Post-ROSE") { #If Site Has Full Study Period (2018-2023)
+  extended <- base_plot_72 +
+    geom_vline(xintercept = 7, linetype = 2) +
+    annotate("text", x=3.333333, y=0.95, label = 'Pre-ROSE') +
+    annotate("text", x=18, y=0.95, label = 'Post-ROSE') 
+} else if (site_type == "Post-ROSE") {
+  extended <- base_plot_72 + 
+    geom_vline(xintercept = 7, linetype = 2) +
+    annotate("text", x=18, y=0.95, label = 'Post-ROSE') 
+} else {
+  extended <- base_plot_72
+}
+# Display the extended plot
+extended
+ggsave(paste0(site, '_paralytics_by_quarter_72.pdf'),
+       path = paste0(project_location, '/project_output/graphs/'))
+
+#Repeat for any paralytic use among patients in cohort
+base_plot_all <- ggplot(paralytics_per_quarter, aes(x=study_quarter, y=paralytics_percent_all)) +
+  geom_errorbar(aes(ymin = paralytics_percent_all - standard_error_all, ymax = paralytics_percent_all + 
+                      standard_error_all), width = 0.1, alpha = 0.5, color = 'grey') +
+  geom_point() +
+  geom_line() +
+  scale_y_continuous(breaks=seq(0,1, by=0.1), 
+                     labels = scales::percent, 
+                     limits = c(0,1.0),
+                     name = 'Paralyzed Anytime After Meeting Study Criteria') +
+  scale_x_continuous(breaks=seq(min_quarter, max_quarter, by=1),
+                     labels = study_quarter_labels,
+                     limits = c(min_quarter, max_quarter),
+                     name = 'Year: Months') +
+  theme_classic() + # theme_classic call
+  theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust = 1)) # custom x-axis text
+
+#Now Add Annotations and Verticle Lines to Plot Based on What Data a Site Has Contributed
+if (site_type == "Pre-ROSE,Post-ROSE") { #If Site Has Full Study Period (2018-2023)
+  extended <- base_plot_all +
+    geom_vline(xintercept = 7, linetype = 2) +
+    annotate("text", x=3.333333, y=0.95, label = 'Pre-ROSE') +
+    annotate("text", x=18, y=0.95, label = 'Post-ROSE') 
+} else if (site_type == "Post-ROSE") {
+  extended <- base_plot_all + 
+    geom_vline(xintercept = 7, linetype = 2) +
+    annotate("text", x=18, y=0.95, label = 'Post-ROSE') 
+} else {
+  extended <- base_plot_all
+}
+# Display the extended plot
+extended
+ggsave(paste0(site, '_paralytics_by_quarter_all.pdf'),
+       path = paste0(project_location, '/project_output/graphs/'))
+
+#Now Repeat for Month
+#Label Every 3rd Month
+tool <- seq(min_month, max_month, by=2)
+new_month_labels <- site_month_labels[tool]
+
+#Paralytics within 48h meeting criteria
+base_plot <- ggplot(paralytics_per_month, aes(x=study_month, y=paralytics_48_hr_percent)) +
+  geom_errorbar(aes(ymin = paralytics_48_hr_percent - standard_error_48, ymax = paralytics_48_hr_percent + standard_error_48), 
+                width = 0.1, alpha = 0.5, color = 'grey') +
+  geom_point() +
+  geom_line() +
+  scale_y_continuous(breaks=seq(0,1, by=0.1), 
+                     labels = scales::percent, 
+                     limits = c(0,1.0),
+                     name = 'Paralyzed within 48 Hours of Meeting Study Criteria') +
+  scale_x_continuous(breaks=seq(min_month, max_month, by=2),
+                     labels = new_month_labels,
+                     limits = c(min_month, max_month),
+                     name = 'Month-Year') +
+  theme_classic() + # theme_classic call
+  theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust = 1)) # custom x-axis text
+
+#Now Add Annotations and Verticle Lines to Plot Based on What Data a Site Has Contributed
+if (site_type == "Pre-ROSE,Post-ROSE") { #If Site Has Full Study Period (2018-2023)
+  extended <- base_plot +
+    geom_vline(xintercept = 19, linetype = 2) +
+    annotate("text", x=8, y=0.95, label = 'Pre-ROSE') +
+    annotate("text", x=50, y=0.95, label = 'Post-ROSE') 
+} else if (site_type == "Post-ROSE") {
+  extended <- base_plot + 
+    geom_vline(xintercept = 19, linetype = 2) +
+    annotate("text", x=50, y=0.95, label = 'Post-ROSE') 
+} else {
+  extended <- base_plot
+}
+
+# Display the extended plot
+extended
+ggsave(paste0(site, '_paralytics_by_month_48.pdf'),
+       path = paste0(project_location, '/project_output/graphs/'))
+
+# Monthly: any paralytics after meeting study criteria
+base_plot_all <- ggplot(paralytics_per_month, aes(x=study_month, y=paralytics_percent_all)) +
+  geom_errorbar(aes(ymin = paralytics_percent_all - standard_error_all, ymax = paralytics_percent_all + standard_error_all), 
+                width = 0.1, alpha = 0.5, color = 'grey') +
+  geom_point() +
+  geom_line() +
+  scale_y_continuous(breaks=seq(0,1, by=0.1), 
+                     labels = scales::percent, 
+                     limits = c(0,1.0),
+                     name = 'Paralyzed Anytime After Meeting Study Criteria') +
+  scale_x_continuous(breaks=seq(min_month, max_month, by=2),
+                     labels = new_month_labels,
+                     limits = c(min_month, max_month),
+                     name = 'Month-Year') +
+  theme_classic() + # theme_classic call
+  theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust = 1)) # custom x-axis text
+
+#Now Add Annotations and Verticle Lines to Plot Based on What Data a Site Has Contributed
+if (site_type == "Pre-ROSE,Post-ROSE") { #If Site Has Full Study Period (2018-2023)
+  extended <- base_plot_all +
+    geom_vline(xintercept = 19, linetype = 2) +
+    annotate("text", x=8, y=0.95, label = 'Pre-ROSE') +
+    annotate("text", x=50, y=0.95, label = 'Post-ROSE') 
+} else if (site_type == "Post-ROSE") {
+  extended <- base_plot_all + 
+    geom_vline(xintercept = 19, linetype = 2) +
+    annotate("text", x=50, y=0.95, label = 'Post-ROSE') 
+} else {
+  extended <- base_plot_all
+}
+# Display the extended plot
+extended
+ggsave(paste0(site, '_paralytics_by_month_all.pdf'),
+       path = paste0(project_location, '/project_output/graphs/'))
+
+##Finally Plot By SARS-COV2 and Period
+base_plot_covid <- ggplot(paralytics_per_quarter_sarscov2, aes(x = study_quarter, y = paralytics_48_hr_percent)) +
+  geom_errorbar(aes(ymin = paralytics_48_hr_percent - standard_error_12,
+                    ymax = paralytics_48_hr_percent + standard_error_12),
+                width = 0.1, alpha = 0.5, color = 'grey') +
+  geom_point(aes(color = sars_cov2_positive)) +
+  geom_line(aes(color = sars_cov2_positive, group = sars_cov2_positive)) +
+  scale_y_continuous(breaks=seq(0,1, by=0.1), 
+                     labels = scales::percent, 
+                     limits = c(0,1.0),
+                     name = 'Paralyzed within 48 Hours of Meeting Study Criteria') +
+  scale_x_continuous(breaks=seq(min_quarter, max_quarter, by=1),
+                     labels = study_quarter_labels,
+                     limits = c(min_quarter, max_quarter),
+                     name = 'Year: Months') +
+  labs(color = "Patient SARS-CoV2 Status") +
+  scale_color_discrete(labels = c("Positive", "Negative/Unknown or Pre-COVID")) +
+  theme_classic() + # theme_classic call
+  theme(
+    axis.text.x = element_text(angle = 45, vjust = 1, hjust = 1),
+    legend.title = element_text(size = rel(0.50)),
+    legend.text  = element_text(size = rel(0.50)),
+    legend.key.size = unit(0.50, "lines")
+  )
+
+#Now Add Annotations and Vertical Lines to Plot Based on What Data a Site Has Contributed
+if (site_type == "Pre-ROSE,Post-ROSE") { #If Site Has Full Study Period (2018-2024)
+  extended <- base_plot_covid +
+    geom_vline(xintercept = 7, linetype = 2) +
+    annotate("text", x=3.333333, y=0.95, label = 'Pre-ROSE') +
+    annotate("text", x=18, y=0.95, label = 'Post-ROSE') 
+} else if (site_type == "Post-ROSE") {
+  extended <- base_plot + 
+    geom_vline(xintercept = 7, linetype = 2) +
+    annotate("text", x=18, y=0.95, label = 'Post-ROSE') 
+} else {
+  extended <- base_plot
+}
+
+# Display the extended plot
+extended
+ggsave(paste0(site, '_paralytics_by_quarter_48_bycovid.pdf'),
+       path = paste0(project_location, '/project_output/graphs/'))
+
+```
+
+
+```{r Paralytics and Patient Outcomes in Table Form}
+to_tab <- c(
+  'any_paralytic_12',
+  'any_paralytic_24',
+  'any_paralytic_48',
+  'any_paralytic_72',
+  'any_paralytic_ever',
+  'in_hosp_death',
+  'death_or_hospice', 
+  'criteria_to_paralytic',
+  'ett_to_paralytic'
+)
+
+#Factor Variables
+factors_tab <- c(
+  'any_paralytic_12',
+  'any_paralytic_24',
+  'any_paralytic_48',
+  'any_paralytic_72',
+  'any_paralytic_ever',
+  'in_hosp_death',
+  'death_or_hospice'
+)
+
+#First Create Table with Ranges and Additional Statistics Including Numbers of Missing and Min/Max
+tab2 <- CreateTableOne(vars = to_tab, data=rose_analytic_df, factorVars = factors_tab)
+summary(tab2) #This will be in HTML File
+
+#Now Create Table 2, One Stratified by Period One by Hospital and One by Period and COVID Status
+tab2 <- CreateTableOne(vars = to_tab, strata="study_period", data=rose_analytic_df, factorVars = factors_tab, addOverall = TRUE) 
+print(tab2)
+tab2_excel <- as.data.frame(print(tab2, printToggle = FALSE, missing = TRUE)) |>
+  mutate(site = site) |>
+  relocate(site, .before = Overall) |>
+  rownames_to_column('characteristic') |>
+  rename(percent_missing = Missing) |>
+  select(-test)
+write.csv(tab2_excel, file=paste0(project_location, '/project_output/', site, '_Table_paralytics_Outcomes_Period.csv'))
+rm(tab2_excel)
+
+#Now Create a Table 2, Stratified by Hospital
+if (n_hospitals>1) {
+tab2 <- CreateTableOne(vars = to_tab, strata="hospital_id", data=rose_analytic_df, factorVars = factors_tab, addOverall = TRUE) 
+print(tab2)
+tab2_excel <- as.data.frame(print(tab2, printToggle = FALSE, missing = TRUE)) |>
+  mutate(site = site) |>
+  relocate(site, .before = Overall) |>
+  rownames_to_column('characteristic') |>
+  rename(percent_missing = Missing) |>
+  select(-test)
+} else {
+tab2 <- CreateTableOne(vars = to_tab, data=rose_analytic_df, factorVars = factors_tab, addOverall = TRUE) 
+print(tab2)
+tab2_excel <- as.data.frame(print(tab2, printToggle = FALSE, missing = TRUE)) |>
+  mutate(site = site) |>
+  relocate(site, .before = Overall) |>
+  rownames_to_column('characteristic') |>
+  rename(percent_missing = Missing) 
+}
+write.csv(tab2_excel, file=paste0(project_location, '/project_output/', site, '_Table_paralytics_Outcomes_by_Hospital.csv'))
+rm(tab2_excel)
+
+
+```
+
+```{r Function to Summarise Logistic Regression Models}
+model_summary_table <- function(model) {
+ 
+#Uses Fixed Effects for Hospital in Sites with > 1 Hospital (and clustered standard errors)  
+if (n_hospitals>1) {
+  #Cluster Robust Standard Errors Using LM Test
+  coef_table <- coeftest(model, 
+                         vcovCL(model, cluster = model.frame(model)$hospital_id)) 
+  # Cluster-robust covariance matrix
+  clustered_se <- vcovCL(model, cluster = model.frame(model)$hospital_id)
+  #Compute confidence intervals manually using the clustered SE
+  conf_int <- coefci(model, vcov. = clustered_se)
+}  else {
+  coef_table <- coeftest(model)
+  conf_int <- coefci(model)
+}
+ model_table <- data.frame(
+  'site' = site,
+  'n_observations' = nobs(model),
+  'term' = rownames(coef_table),
+  'estimate' = coef_table[, "Estimate"],
+  'std_error' = coef_table[, "Std. Error"],
+  'p_value' = coef_table[, "Pr(>|z|)"],
+  'odds_ratio' = round(exp(coef_table[, "Estimate"]), 3),  # Exponentiated coefficients as Odds Ratios
+  'lower_bound' = exp(conf_int[, 1]),  # Lower bound of CI from coefci()
+  'upper_bound' = exp(conf_int[, 2])   # Upper bound of CI from coefci()
+)
+model_table <- model_table |>
+  mutate(confidence_interval=paste0(round(lower_bound, 3), ' - ', round(upper_bound, 3))) |>
+  mutate(n_hospitals=n_hospitals) |>
+  relocate(confidence_interval, .before = lower_bound) |>
+  relocate(n_hospitals, .after = n_observations) 
+  rownames(model_table) <- NULL
+return(model_table)
+}
+
+```
+
+
+```{r Logistic Regression}
+#To Aid In Intrepretability Plan to Scale Each of The Continuous Variables
+#Will Use Global Mean from Preliminary Data to Center Each Variable and then Scale by Reasonable Delta
+rose_analytic_df <- rose_analytic_df |>
+  mutate(
+    age_scale=(age_at_admission-60)/10,
+    bmi_scale=(bmi-30)/5,
+    first_rose_pf_all_scale=(first_rose_pf_all-100)/10,
+    first_rose_fio2_scale=(first_rose_fio2-0.8)/.1 ,
+    first_rose_peep_scale = (first_rose_peep - 10),
+    compliance_scale = (compliance_estimate_min - 30)/5,
+    compliance_scale_obs = (compliance_min - 30)/5,
+    rr_diff_max_scale = rr_diff_max/5,
+    tv_cc_kg_scale = tv_cc_kg - 6,
+    min_ph_scale = (min_ph - 7.4)/.1,
+    mv_obs_max_scale = (mv_obs_max -10),
+    plat_max_scale = (plat_estimate_max-20)/5, 
+    plat_max_scale_obs = (plat_max-20)/5, 
+    sofa_score_scale=(sofa_score-8))
+
+#Set reference levels for factors for regressions 1) Convert to an unordered factor, 2) Relevel to set the reference group
+rose_analytic_df$sars_cov2_positive <- factor(rose_analytic_df$sars_cov2_positive, ordered = FALSE)
+rose_analytic_df$sars_cov2_positive <- relevel(rose_analytic_df$sars_cov2_positive, ref = "Positive")
+
+rose_analytic_df$race_ethnicity <- factor(rose_analytic_df$race_ethnicity, ordered = FALSE)
+rose_analytic_df$race_ethnicity <- relevel(rose_analytic_df$race_ethnicity, ref = "White, non-Hispanic")
+
+rose_analytic_df$first_rose_mode <- factor(rose_analytic_df$first_rose_mode, ordered = FALSE)
+rose_analytic_df$first_rose_mode <- relevel(rose_analytic_df$first_rose_mode, ref = "Pressure-Regulated Volume Control")
+
+rose_analytic_df$enrollment_location_type <- factor(rose_analytic_df$enrollment_location_type, ordered = FALSE)
+rose_analytic_df$enrollment_location_type <- relevel(rose_analytic_df$enrollment_location_type, ref = "medical_icu")
+
+rose_analytic_df$nee_pressor_dose <- factor(rose_analytic_df$nee_pressor_dose, ordered = FALSE)
+rose_analytic_df$nee_pressor_dose <- relevel(rose_analytic_df$nee_pressor_dose, ref = "1")
+
+rose_analytic_df$or_before_enrollment <- factor(rose_analytic_df$or_before_enrollment)
+rose_analytic_df$ph_bad_cat <- factor(rose_analytic_df$ph_bad_cat)
+
+
+#Main Model: first look at primary outcome, identifying predictors of paralytics within 48 hours, including estimated compliance and plateau pressure 
+if (n_hospitals>1) {
+model_form_step <- any_paralytic_48 ~ factor(hospital_id) + study_period + bmi_scale + age_scale + sofa_score_scale + race_ethnicity + or_before_enrollment + first_rose_fio2_scale + first_rose_peep_scale + first_rose_mode + criteria + first_rose_pf_all_scale + nee_pressor_dose + ett_to_enrolled + female  + enrollment_location_type  + deep_rass + rr_diff_max_scale + covid_positive + tv_cc_kg_scale  + mv_obs_max_scale  + plat_max_scale + compliance_scale
+main_mod <- glm(model_form_step,
+          data = rose_analytic_df, 
+          family=binomial)
+} else {
+model_form_step <- any_paralytic_48 ~ study_period + bmi_scale + age_scale + sofa_score_scale + race_ethnicity + or_before_enrollment + first_rose_fio2_scale + first_rose_peep_scale + first_rose_mode + criteria + first_rose_pf_all_scale + nee_pressor_dose + ett_to_enrolled + female  + enrollment_location_type  + deep_rass + rr_diff_max_scale + covid_positive + tv_cc_kg_scale  + mv_obs_max_scale  + plat_max_scale + compliance_scale
+main_mod <- glm(model_form_step,
+          data = rose_analytic_df, 
+          family=binomial, na.action = na.omit)
+}
+
+summary(main_mod)
+main_mod_summary <- model_summary_table(main_mod)
+
+#Next look at SA; 
+#Model SA1: look at paralytics within first IMV episode (not just 48h), including compliance and plateau pressure 
+if (n_hospitals>1) {
+model_form_step <- any_paralytic_ever ~ factor(hospital_id) + study_period + bmi_scale + age_scale + sofa_score_scale + race_ethnicity + or_before_enrollment + first_rose_fio2_scale + first_rose_peep_scale + first_rose_mode + criteria + first_rose_pf_all_scale + nee_pressor_dose + ett_to_enrolled + female  + enrollment_location_type  + deep_rass + rr_diff_max_scale + covid_positive + tv_cc_kg_scale  + mv_obs_max_scale  + plat_max_scale + compliance_scale
+main_mod_sa1 <- glm(model_form_step,
+          data = rose_analytic_df, 
+          family=binomial)
+} else {
+model_form_step <- any_paralytic_ever ~ study_period + bmi_scale + age_scale + sofa_score_scale + race_ethnicity + or_before_enrollment + first_rose_fio2_scale + first_rose_peep_scale + first_rose_mode + criteria + first_rose_pf_all_scale + nee_pressor_dose + ett_to_enrolled + female  + enrollment_location_type  + deep_rass + rr_diff_max_scale + covid_positive + tv_cc_kg_scale  + mv_obs_max_scale  + plat_max_scale + compliance_scale
+main_mod_sa1 <- glm(model_form_step,
+          data = rose_analytic_df, 
+          family=binomial, na.action = na.omit)
+}
+
+summary(main_mod_sa1)
+main_mod_summary_sa1 <- model_summary_table(main_mod_sa1)
+
+#Model SA2: look at paralytics within first 48h, excluding estimated compliance and plateau pressure - use true values from observed plateau pressure
+if (n_hospitals>1) {
+model_form_step <- any_paralytic_48 ~ factor(hospital_id) + study_period + bmi_scale + age_scale + sofa_score_scale + race_ethnicity + or_before_enrollment + first_rose_fio2_scale + first_rose_peep_scale + first_rose_mode + criteria + first_rose_pf_all_scale + nee_pressor_dose + ett_to_enrolled + female  + enrollment_location_type  + deep_rass + rr_diff_max_scale + covid_positive + tv_cc_kg_scale  + mv_obs_max_scale  + plat_max_scale_obs + compliance_scale_obs
+main_mod_sa2 <- glm(model_form_step,
+          data = rose_analytic_df, 
+          family=binomial)
+} else {
+model_form_step <- any_paralytic_48 ~ study_period + bmi_scale + age_scale + sofa_score_scale + race_ethnicity + or_before_enrollment + first_rose_fio2_scale + first_rose_peep_scale + first_rose_mode + criteria + first_rose_pf_all_scale + nee_pressor_dose + ett_to_enrolled + female  + enrollment_location_type  + deep_rass + rr_diff_max_scale + covid_positive + tv_cc_kg_scale  + mv_obs_max_scale  + plat_max_scale_obs + compliance_scale_obs
+main_mod_sa2 <- glm(model_form_step,
+          data = rose_analytic_df, 
+          family=binomial, na.action = na.omit)
+}
+
+summary(main_mod_sa2)
+main_mod_summary_sa2 <- model_summary_table(main_mod_sa2)
+
+#SA3: Subset of Severe ARDS; Identifying predictors of paralytics within 48 hours, including estimated compliance and plateau pressure, in patients with p/f<100
+if (n_hospitals>1) {
+model_form_step <- any_paralytic_48 ~ factor(hospital_id) + study_period + bmi_scale + age_scale + sofa_score_scale + race_ethnicity + or_before_enrollment + first_rose_fio2_scale + first_rose_peep_scale + first_rose_mode + criteria + first_rose_pf_all_scale + nee_pressor_dose + ett_to_enrolled + female  + enrollment_location_type  + deep_rass + rr_diff_max_scale + covid_positive + tv_cc_kg_scale  + mv_obs_max_scale  + plat_max_scale + compliance_scale
+main_mod_severe <- glm(model_form_step,
+          data = subset(rose_analytic_df, severe_ards==1), 
+          family=binomial)
+} else {
+model_form_step <- any_paralytic_48 ~ study_period + bmi_scale + age_scale + sofa_score_scale + race_ethnicity + or_before_enrollment + first_rose_fio2_scale + first_rose_peep_scale + first_rose_mode + criteria + first_rose_pf_all_scale + nee_pressor_dose + ett_to_enrolled + female  + enrollment_location_type  + deep_rass + rr_diff_max_scale + covid_positive + tv_cc_kg_scale  + mv_obs_max_scale  + plat_max_scale + compliance_scale
+main_mod_severe <- glm(model_form_step,
+          data = subset(rose_analytic_df, severe_ards==1), 
+          family=binomial, na.action = na.omit)
+}
+
+summary(main_mod_severe)
+main_mod_summary_sa3 <- model_summary_table(main_mod_severe)
+
+#SA4: Subset of patients IMV 2022-2024; Identifying predictors of paralytics within 48 hours, including estimated compliance and plateau pressure
+if (n_hospitals>1) {
+model_form_step <- any_paralytic_48 ~ factor(hospital_id) + bmi_scale + age_scale + sofa_score_scale + race_ethnicity + or_before_enrollment + first_rose_fio2_scale + first_rose_peep_scale + first_rose_mode + criteria + first_rose_pf_all_scale + nee_pressor_dose + ett_to_enrolled + female  + enrollment_location_type  + deep_rass + rr_diff_max_scale + covid_positive + tv_cc_kg_scale  + mv_obs_max_scale  + plat_max_scale + compliance_scale
+main_mod_current <- glm(model_form_step,
+          data = subset(rose_analytic_df, t_rose_first>=as.POSIXct("2022-01-01", tz=site_time_zone)), 
+          family=binomial)
+} else {
+model_form_step <- any_paralytic_48 ~ bmi_scale + age_scale + sofa_score_scale + race_ethnicity + or_before_enrollment + first_rose_fio2_scale + first_rose_peep_scale + first_rose_mode + criteria + first_rose_pf_all_scale + nee_pressor_dose + ett_to_enrolled + female  + enrollment_location_type  + deep_rass + rr_diff_max_scale + covid_positive + tv_cc_kg_scale  + mv_obs_max_scale  + plat_max_scale + compliance_scale
+main_mod_current <- glm(model_form_step,
+          data = subset(rose_analytic_df, t_rose_first>=as.POSIXct("2022-01-01", tz=site_time_zone)), 
+          family=binomial, na.action = na.omit)
+}
+
+summary(main_mod_current)
+main_mod_summary_sa4 <- model_summary_table(main_mod_current)
+
+#SA5: Subset of patients who are okay with reintubation (exclude DNAR/DNI and DNI)
+if (n_hospitals>1) {
+model_form_step <- any_paralytic_48 ~ factor(hospital_id) + bmi_scale + age_scale + sofa_score_scale + race_ethnicity + or_before_enrollment + first_rose_fio2_scale + first_rose_peep_scale + first_rose_mode + criteria + first_rose_pf_all_scale + nee_pressor_dose + ett_to_enrolled + female  + enrollment_location_type  + deep_rass + rr_diff_max_scale + covid_positive + tv_cc_kg_scale  + mv_obs_max_scale  + plat_max_scale + compliance_scale
+main_mod_ett <- glm(model_form_step,
+          data = subset(rose_analytic_df, code_status_presume!="No resuscitation, no intubation" & code_status_presume !="Okay with resuscitation, except no intubation"), 
+          family=binomial)
+} else {
+model_form_step <- any_paralytic_48 ~ bmi_scale + age_scale + sofa_score_scale + race_ethnicity + or_before_enrollment + first_rose_fio2_scale + first_rose_peep_scale + first_rose_mode + criteria + first_rose_pf_all_scale + nee_pressor_dose + ett_to_enrolled + female  + enrollment_location_type  + deep_rass + rr_diff_max_scale + covid_positive + tv_cc_kg_scale  + mv_obs_max_scale  + plat_max_scale + compliance_scale
+main_mod_ett <- glm(model_form_step,
+          data = subset(rose_analytic_df, code_status_presume!="No resuscitation, no intubation" & code_status_presume !="Okay with resuscitation, except no intubation"), 
+          family=binomial, na.action = na.omit)
+}
+
+summary(main_mod_ett)
+main_mod_summary_sa5 <- model_summary_table(main_mod_ett)
+
+
+#Summary Table With All Models
+main_table <- bind_rows(
+  data.frame(site = c("Main model")),
+  main_mod_summary,
+  data.frame(site = c("SA1: all paralytics during first IMV")),
+  main_mod_summary_sa1,
+  data.frame(site = c("SA2: only observed plateau pressure and compliance")),
+  main_mod_summary_sa2,
+  data.frame(site = c("SA3: severe ARDS")),
+  main_mod_summary_sa3,
+  data.frame(site = c("SA4: Current practice 2022-2024")),
+  main_mod_summary_sa4,
+  data.frame(site = c("SA5: Exclude DNI")),
+  main_mod_summary_sa5
+)
+# Write the table to a CSV file
+write.csv(main_table, paste0(project_location, '/project_output/', site, '_adjusted_models.csv'))
+
+#Output a Table of Average Marginal Effects Using the AME Function Created Above
+#model_list <- list(main_mod, main_mod_plat, main_mod_cov2, main_mod_plat_cov2)
+#main_ame <- ame_summary(model_list)
+#write.csv(main_ame, paste0(project_location, '/project_output/', site, '_adjusted_ame.csv'))
+```
+
+```{r Descriptive data for paralytic use in past 3 years, post-COVID patients who meet ROSE criteria}
+
+current_rose <- rose_analytic_df |>
+  filter(t_rose_first>=as.POSIXct("2022-01-01", tz=site_time_zone))
+
+#Look at use of continuous vs intermittent pushes, and how many intermittent pushes
+total_possible<- nrow(current_rose)
+
+#continuous
+continuous<- current_rose |>
+  filter(any_continuous=="continuous") |>
+  mutate(ett_to_paralytic_c_all=as.numeric(ett_to_paralytic_c_all)/60/60/24, 
+         any_proning=fifelse(!is.na(prone_episodes), 1, 0))
+  
+to_tab <- c(
+  'continous_paralytic_given',
+  'compliance_estimate_min',
+  'compliance_min',
+  'ett_to_paralytic_c_all',
+  'any_proning',
+  'ratio_at_paralytics_c_all', 
+  'age_at_admission',
+  'race_ethnicity',
+  'bmi',
+  'hospital_id',
+  'sars_cov2_positive',
+  'sofa_score',
+  'nee_pressor_dose',
+  'rr_diff_max',
+  'mv_obs_max',
+  'plat_max',
+  'enrollment_location_type')
+
+#Factor Variables
+factors_tab <- c(
+  'continous_paralytic_given',
+  'any_proning', 
+  'race_ethnicity',
+  'hospital_id',
+  'sars_cov2_positive',
+  'nee_pressor_dose',
+  'enrollment_location_type'
+)
+
+
+tab2_continuous <- CreateTableOne(vars = to_tab, data=continuous, factorVars = factors_tab)
+summary(tab2_continuous) 
+
+tab2_excel <- as.data.frame(print(tab2_continuous, printToggle = FALSE, missing = TRUE)) |>
+  mutate(site = site) |>
+  relocate(site, .before = Overall) |>
+  rownames_to_column('characteristic') |>
+  rename(percent_missing = Missing)
+write.csv(tab2_excel, file=paste0(project_location, '/project_output/', site, '_Table_paralytics_continuous_current_rose.csv'))
+rm(tab2_excel)
+
+#intermittent
+intermittent<- current_rose |>
+  filter(any_intermittent=="intermittent") |>
+    mutate(ett_to_paralytic_i_all=as.numeric(ett_to_paralytic_i_all)/60/60/24, 
+         any_proning=fifelse(!is.na(prone_episodes), 1, 0))
+
+to_tab <- c(
+  'intermittent_paralytic_given',
+  'compliance_estimate_min',
+  'compliance_min',
+  'ett_to_paralytic_i_all',
+  'any_proning', 
+  'intermittent_para_all', 
+  'ratio_at_paralytics_i_all', 
+  'age_at_admission',
+  'race_ethnicity',
+  'bmi',
+  'hospital_id',
+  'sars_cov2_positive',
+  'sofa_score',
+  'nee_pressor_dose',
+  'rr_diff_max',
+  'mv_obs_max',
+  'plat_max',
+  'enrollment_location_type')
+
+#Factor Variables
+factors_tab <- c(
+  'intermittent_paralytic_given',
+  'any_proning', 
+  'race_ethnicity',
+  'hospital_id',
+  'sars_cov2_positive',
+  'nee_pressor_dose',
+  'enrollment_location_type'
+)
+
+tab2_intermittent <- CreateTableOne(vars = to_tab, data=intermittent, factorVars = factors_tab)
+summary(tab2_intermittent) 
+
+tab2_excel <- as.data.frame(print(tab2_intermittent, printToggle = FALSE, missing = TRUE)) |>
+  mutate(site = site) |>
+  relocate(site, .before = Overall) |>
+  rownames_to_column('characteristic') |>
+  rename(percent_missing = Missing)
+write.csv(tab2_excel, file=paste0(project_location, '/project_output/', site, '_Table_paralytics_intermittent_current_rose.csv'))
+rm(tab2_excel)
+
+```
+
+
+```{r Descriptive data for paralytic use in past 3 years, post-COVID all patients regardless of whether meet ROSE criteria}
+
+#Look at use of continuous vs intermittent pushes, and how many intermittent pushes
+total_possible<- nrow(current_analytic_df)
+
+#continuous
+continuous<- current_analytic_df |>
+  filter(any_continuous=="continuous") |>
+  mutate(ett_to_paralytic_c_all=as.numeric(ett_to_paralytic_c_all)/60/60/24, 
+         any_proning=fifelse(!is.na(prone_episodes), 1, 0))
+  
+to_tab <- c(
+  'continous_paralytic_given',
+  'compliance_estimate_min',
+  'compliance_min',
+  'ett_to_paralytic_c_all',
+  'any_proning',
+  'ratio_at_paralytics_c_all', 
+  'age_at_admission',
+  'race_ethnicity',
+  'bmi',
+  'hospital_id',
+  'sars_cov2_positive',
+  'sofa_score',
+  'nee_pressor_dose',
+  'rr_diff_max',
+  'mv_obs_max',
+  'plat_max',
+  'enrollment_location_type')
+
+#Factor Variables
+factors_tab <- c(
+  'continous_paralytic_given',
+  'any_proning', 
+  'race_ethnicity',
+  'hospital_id',
+  'sars_cov2_positive',
+  'nee_pressor_dose',
+  'enrollment_location_type'
+)
+
+tab2_continuous <- CreateTableOne(vars = to_tab, data=continuous, factorVars = factors_tab)
+summary(tab2_continuous) 
+
+tab2_excel <- as.data.frame(print(tab2_continuous, printToggle = FALSE, missing = TRUE)) |>
+  mutate(site = site) |>
+  relocate(site, .before = Overall) |>
+  rownames_to_column('characteristic') |>
+  rename(percent_missing = Missing)
+write.csv(tab2_excel, file=paste0(project_location, '/project_output/', site, '_Table_paralytics_continuous_current_all.csv'))
+rm(tab2_excel)
+
+#intermittent
+intermittent<- current_analytic_df |>
+  filter(any_intermittent=="intermittent") |>
+    mutate(ett_to_paralytic_i_all=as.numeric(ett_to_paralytic_i_all)/60/60/24, 
+         any_proning=fifelse(!is.na(prone_episodes), 1, 0))
+
+to_tab <- c(
+  'intermittent_paralytic_given',
+  'compliance_estimate_min',
+  'compliance_min',
+  'ett_to_paralytic_i_all',
+  'any_proning', 
+  'intermittent_para_all', 
+  'ratio_at_paralytics_i_all', 
+  'age_at_admission',
+  'race_ethnicity',
+  'bmi',
+  'hospital_id',
+  'sars_cov2_positive',
+  'sofa_score',
+  'nee_pressor_dose',
+  'rr_diff_max',
+  'mv_obs_max',
+  'plat_max',
+  'enrollment_location_type')
+
+#Factor Variables
+factors_tab <- c(
+  'intermittent_paralytic_given',
+  'any_proning', 
+  'race_ethnicity',
+  'hospital_id',
+  'sars_cov2_positive',
+  'nee_pressor_dose',
+  'enrollment_location_type'
+)
+
+tab2_intermittent <- CreateTableOne(vars = to_tab, data=intermittent, factorVars = factors_tab)
+summary(tab2_intermittent) 
+
+tab2_excel <- as.data.frame(print(tab2_intermittent, printToggle = FALSE, missing = TRUE)) |>
+  mutate(site = site) |>
+  relocate(site, .before = Overall) |>
+  rownames_to_column('characteristic') |>
+  rename(percent_missing = Missing)
+write.csv(tab2_excel, file=paste0(project_location, '/project_output/', site, '_Table_paralytics_intermittent_current_all.csv'))
+rm(tab2_excel)
+
+```
+
+
+```{r}
+cat('This code is DONE!!! Thank you for your support for this CLIF project!')
+```
