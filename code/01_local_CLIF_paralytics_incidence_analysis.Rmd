@@ -6,10 +6,10 @@ title: "CLIF_paralytics_incidence_analysis"
 #Load the Analytic File
 ```{r}
 
-site_time_zone <-"America/New_York" #Add your local time zone prior to UTC conversion, options for this Analysis are EST = 'America/New_York', CST = 'America/Chicago', PST = 'America/Los_Angeles' 
-tables_location <-"Z:/barker/clif_3_22/CLIF-2.0.0-dttm-update-R"
-project_location <-"Z:/barker/clif_paralytics" #Add local path to project location, where results will output
-site <-"Michigan" #Add local site name
+site_time_zone <-"America/Chicago" #Add your local time zone prior to UTC conversion, options for this Analysis are EST = 'America/New_York', CST = 'America/Chicago', PST = 'America/Los_Angeles' 
+tables_location <-"/Users/kavenchhikara/Library/CloudStorage/Box-Box/RCLIF_data/CLIF_2018_24/2.1.0" #Add local path to CLIF tables
+project_location <-"/Users/kavenchhikara/Projects/CLIF/CLIF_paralytics" #Add local path to project location, where results will output
+site <-"ucmc" #Add local site name
 file_type <-"parquet" #Options are "parquet" or "csv"
 
 check_timezone <- function(site_timezone, intended_timezone = Sys.timezone()) {
