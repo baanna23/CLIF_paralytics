@@ -32,7 +32,6 @@ check_timezone <- function(site_timezone, intended_timezone = Sys.timezone()) {
   }
 }
 
-
 #Time Zone Check
 result <- check_timezone(site_time_zone)
 ```
@@ -48,7 +47,9 @@ packages <- c("lubridate",
               "data.table",
               "viridis",
               "sandwich", #Cluster Robust Standard Errors
-              "lmtest"  #Allows Calculation of Cluster Robust Standard Errors
+              "lmtest",  #Allows Calculation of Cluster Robust Standard Errors
+              "treemap",
+               "tibble"
               #"marginaleffects"
               ) #Predictions and Average Slopes for Average Marginal Effects
 
@@ -67,8 +68,8 @@ select <- dplyr::select
 
 #Create Sub Folders for Graphs within Project Output Folder
 # Check if the output directory exists; if not, create it
-if (!dir.exists(paste0(project_location, "/project_output/graphs"))) {
-  dir.create(paste0(project_location, "/project_output/graphs"))
+if (!dir.exists(paste0(project_location, "/project_output_UPLOAD/graphs"))) {
+  dir.create(paste0(project_location, "/project_output_UPLOAD/graphs"))
 }
 
 ```
@@ -96,17 +97,17 @@ fn.timezone_tolocal <- function(df) {
 
 ```{r Load Site-specific analytic data set and Convert to Local Time Zone}
 #NOTE: This Table is Created by the prior script
-general_analytic_df <- open_dataset(paste0(project_location, '/project_tables/rose_analytic_data.parquet')) 
+general_analytic_df <- open_dataset(paste0(project_location, '/project_tables_DO_NOT_UPLOAD/rose_analytic_data.parquet'))
 
 #Apply Function to Convert to Local Timezone
 general_analytic_df <- fn.timezone_tolocal(general_analytic_df)
   
 set.seed(32284) #For Reproducibility
 
-#Bring Into R Environment as 2 Dataframes - one more recent data, without meeting all ROSE eligibility criteria and other strictly rose
+#Bring Into R Environment as 2 Dataframes - one more recent data, post-COVID, without meeting all ROSE eligibility criteria and other strictly rose
 #For patient_ids with more than one encounter block, select one at random
 current_analytic_df <- general_analytic_df |> 
-  filter(final_admission_dttm>= "2022-01-01 00:00:00" & final_admission_dttm< "2025-01-01 00:00:00") |>
+  filter(final_admission_dttm>= "2022-03-01 00:00:00" & final_admission_dttm< "2026-01-01 00:00:00") |>
   collect() |>
   group_by(patient_id) |>
   slice_sample(n=1) |>
@@ -118,20 +119,39 @@ rose_analytic_df <- general_analytic_df |>
   mutate(tv_cc_kg=set_tv_enrollment / study_weight_kg, 
   early_prone = fifelse(as.POSIXct(first_prone_time) <= as.POSIXct(t_rose_first), 1, 0), 
   prone_6 = (as.POSIXct(first_prone_time)<=as.POSIXct(t_rose_first)+dhours(6)), 
+  prone_48 = (as.POSIXct(first_prone_time)<=as.POSIXct(t_rose_first)+dhours(48)), 
+  prone_48 = fifelse(prone_48==FALSE | is.na(prone_48), 0, 1), 
+  prone_all = fifelse(is.na(prone_episodes), 0, 1), 
+  p_and_p = fifelse(prone_48==1 & any_paralytic_48==1, 1, 0), 
   LPV = case_when(tv_cc_kg <=8~1, tv_cc_kg>8~0), 
-  deep_rass = case_when(is.na(min_rass) | min_rass< -3~1, min_rass>-4~0),
+  pfround = round(first_rose_pf_all),
+  deep_rass = case_when(min_rass12< -3~1, min_rass12>-4~0),
   ph_bad_cat = case_when(is.na(min_ph) | min_ph >=7.2 ~0, min_ph <7.2~1), 
+  dys_ph = case_when(min_ph <=7.4 ~0, min_ph >7.4~1), 
+  dys_rr = case_when(rr_diff_max <15 ~0, rr_diff_max >= 15~1), 
+  dys_mv = case_when(mv_obs_max <15 ~0, mv_obs_max >= 15~1), 
+  agitated_rass = fifelse(max_rass >1, 1,0), 
+  either_dys = fifelse(dys_rr==1 | dys_mv==1 , 1, 0), 
+  mv_obs_max_impute =coalesce(mv_obs_max, mv_set_max), 
+  rr_diff_max_impute = coalesce(rr_diff_max, 0),
+  dys_rr_impute = case_when( rr_diff_max <15 | is.na(rr_diff_max) ~0, rr_diff_max >= 15~1), #90% if missing, then assume not dyssynchrony
+  dys_mv_impute = case_when(mv_obs_max <15 | is.na(mv_obs_max) ~0, mv_obs_max >= 15~1), #90%
+  agitated_rass_impute = fifelse(max_rass <2 | is.na(max_rass), 0,1), 
+  either_dys_impute = fifelse(dys_rr_impute==1 | dys_mv_impute==1, 1, 0), 
+  hypoxemia = fifelse(pfround <100, 1, 0), 
   code_status_presume = fifelse(!is.na(code_status_category), code_status_category, "Full"), 
-  code_status_partial = fifelse(tolower(code_status_name)=="partial" | tolower(code_status_name)=="partial code",  1, 0)) |>
+  code_status_partial = fifelse(tolower(code_status_name)=="partial" | tolower(code_status_name)=="partial code",  1, 0),
+  hypoxemia_dys = case_when(hypoxemia==1 & either_dys_impute==0~"hypoxemia", hypoxemia==1 & either_dys_impute==1~"hypoxemia and dyssynchrony", hypoxemia==0 & either_dys_impute==1~"dyssynchrony" , hypoxemia==0 & either_dys_impute==0~"neither")) |>
   filter(is.na(early_prone) | early_prone==0)|>
   collect()
-
-location <- as.data.frame(table(rose_analytic_df$enrollment_location_type, useNA = "always"))
-write_csv(location, paste0(project_location, '/project_output/aggregate_location.csv'))
-
+#location <- as.data.frame(table(rose_analytic_df$enrollment_location_type, useNA = "always"))
+#write_csv(location, paste0(project_location, '/project_output_UPLOAD/aggregate_location.csv'))
 
 aggregate_code_status<-as.data.frame(table(rose_analytic_df$code_status_presume, rose_analytic_df$code_status_partial, useNA = "always")) # if missing at time meet criteria then presume full. 
-write_csv(aggregate_code_status, paste0(project_location, '/project_output/aggregate_code_status.csv'))
+aggregate_code_status<- aggregate_code_status %>% mutate(Freq_string=fifelse(Freq<10 & Freq!=0,"<10",as.character(Freq))) 
+aggregate_code_status<- aggregate_code_status %>% select(-Freq)
+
+write_csv(aggregate_code_status, paste0(project_location, '/project_output_UPLOAD/aggregate_code_status.csv'))
 
 rose_analytic_df <- rose_analytic_df |>
   mutate(covid_positive =case_when(sars_cov2_positive == '1'~1, is.na(sars_cov2_positive) | sars_cov2_positive=='0'   ~0),
@@ -144,8 +164,8 @@ rose_analytic_df <- rose_analytic_df |>
 
 #For patient_ids with more than one encounter block, select one at random
 rose_analytic_df <- rose_analytic_df |>
-  #Filter Out Those with t_enrollment in 2025
-  filter(year(t_rose_first)<2025) |>
+  #Filter Out Those with t_enrollment in 2026
+  filter(year(t_rose_first)<2026) |>
   group_by(patient_id) |>
   slice_sample(n=1) |>
   ungroup()
@@ -173,8 +193,8 @@ rose_analytic_df <- rose_analytic_df |>
 cat('At', site, 'the first eligible patient was enrolled on', as.character(first(rose_analytic_df$t_rose_first)), 
     '\n and the last on', as.character(last(rose_analytic_df$t_rose_first)))
 
-#Create a Study Month Data Frame to Merge to Create Study Month; Can Adjust ym() to accomadte desired period; for this analysis 2018 through 2024
-study_month <- data.frame(start_date=seq(ym("201801"), ym("202412"), by= "months")) |>
+#Create a Study Month Data Frame to Merge to Create Study Month; Can Adjust ym() to accomadte desired period; for this analysis 2018 through 2025
+study_month <- data.frame(start_date=seq(ym("201801"), ym("202512"), by= "months")) |>
   mutate(calendar_month=month(start_date)) |>
   mutate(year=year(start_date)) |>
   arrange(year, calendar_month) |>
@@ -187,22 +207,23 @@ rose_analytic_df <- rose_analytic_df |>
   left_join(study_month) 
  
 #Define the Pre-Specified Study Periods
-#Jan 2018-June 2019 'Pre-ROSE', July 2019-December 2024 'Post-ROSE'
+#Jan 2018-Feb 2020 'Pre-ROSE/Pre-COVID', Mar 2020-Feb 2022 'Post-ROSE/COVID', Mar 2022-December 2025 'Post-ROSE/post-COVID'
 rose_analytic_df <- rose_analytic_df |>
-  filter(year<2025 & year>2017) |>
+  filter(year<2026 & year>2017) |>
   mutate(study_period=fcase(
-    study_month>=1 & study_month<19, 'Pre-ROSE',
-    study_month>=19, 'Post-ROSE'
+    study_month>=1 & study_month<27, 'Pre-ROSE/Pre-COVID',
+    study_month>=27 & study_month<50, 'Post-ROSE/COVID',
+    study_month>=50, 'Post-ROSE/Post-COVID'
   )) |>
   mutate(study_period_cat=factor(study_period,
-                               levels = c("Pre-ROSE", "Post-ROSE"),
-                               labels = c(0, 1)))
+                               levels = c("Pre-ROSE/Pre-COVID", "Post-ROSE/COVID", "Post-ROSE/Post-COVID"),
+                               labels = c(0, 1, 2)))
 
 #In this script we keep track of the minimum and maximum study month both for graphs and for the modelling
-min_month <- min(rose_analytic_df$study_month)
-max_month <- max(rose_analytic_df$study_month)
-min_quarter <- min(rose_analytic_df$study_quarter)
-max_quarter <- max(rose_analytic_df$study_quarter)
+min_month <- min(rose_analytic_df$study_month, na.rm = T)
+max_month <- max(rose_analytic_df$study_month, na.rm = T)
+min_quarter <- min(rose_analytic_df$study_quarter, na.rm = T)
+max_quarter <- max(rose_analytic_df$study_quarter, na.rm = T)
 
 #Create 'site_type' vector that shows Which study periods are Included
 site_type <- rose_analytic_df |>
@@ -218,18 +239,18 @@ rose_analytic_df <- rose_analytic_df |>
   mutate(ett_to_enrolled=as.duration(t_rose_first-vent_episode_start)/dhours(1)) |>
   mutate(severe_ards=fifelse(first_rose_pf_all<100, 1, 0))
 
-#Create a 'Unknown' Category for SARS COV2 - This is if we can't confirm a positive or negative SARS-Cov2 test in the COVID or Post-COVID era
+#If we can't confirm a positive or negative SARS-Cov2 test in the COVID or Post-COVID era, assumed negative
 rose_analytic_df <- rose_analytic_df |>
  mutate(sars_cov2_positive=case_when(
    sars_cov2_positive==1~ 'Positive',
-   study_month>=1 & study_month<28~ 'Pre-COVID',  #If less than April 2020, consider pre-covid
+   study_month>=1 & study_month<27~ 'Pre-COVID',  #If less than March 2020, consider pre-covid
    sars_cov2_positive==0 | is.na(sars_cov2_positive)~ 'Negative',
  ))
 ```
 
 
 ```{r Describe The Number of Admissions Per Month, Admissions Per Period}
-#Create a Table of N of Patients and Number paralyticsd Per Study Month
+#Create a Table of N of Patients and Number paralytics  Per Study Month
 paralytics_per_month <- rose_analytic_df |> 
   group_by(study_month) |>
   summarise(
@@ -256,37 +277,35 @@ paralytics_per_month <- rose_analytic_df |>
     'standard_error_all' = sqrt(mean(any_paralytic_ever) * (1 - mean(any_paralytic_ever)) / n())
   ) |>
   relocate(site, n_hospitals, .before = study_month)
-#Save Locally At Each Site but Don't Export as May have 1 Patient Per Month
-write_csv(paralytics_per_month, paste0(project_location, '/project_output/', site,'_paralytics_per_month.csv'))
 
-#Create a Table of N of Patients and Number paralyzed Per Study Month Per Hospital
-paralytics_per_month_by_hospital <- rose_analytic_df |> 
-  group_by(study_month, hospital_id) |>
-  summarise(
-    'site' = site,
-    'n_hospitals' = n_hospitals,
-    'year' = mean(year),
-    'calendar_month' = mean(calendar_month),
-    'study_period' = max(study_period),
-    'n_patients' = n(),
-    'n_paralytics_12_hr' = sum(any_paralytic_12),
-    'paralytics_12_hr_percent' = mean(any_paralytic_12),
-    'standard_error_12' = sqrt(mean(any_paralytic_12) * (1 - mean(any_paralytic_12)) / n()),
-    'n_paralytics_24_hr' = sum(any_paralytic_24),
-    'paralytics_24_hr_percent' = mean(any_paralytic_24),
-    'standard_error_24' = sqrt(mean(any_paralytic_24) * (1 - mean(any_paralytic_24)) / n()),
-    'n_paralytics_48_hr' = sum(any_paralytic_48),
-    'paralytics_48_hr_percent' = mean(any_paralytic_48),
-    'standard_error_48' = sqrt(mean(any_paralytic_48) * (1 - mean(any_paralytic_48)) / n()),
-    'n_paralytics_72_hr' = sum(any_paralytic_72),
-    'paralytics_72_hr_percent' = mean(any_paralytic_72),
-    'standard_error_72' = sqrt(mean(any_paralytic_72) * (1 - mean(any_paralytic_72)) / n()),
-    'n_paralytics_all' = sum(any_paralytic_ever),
-    'paralytics_percent_all' = mean(any_paralytic_ever),
-    'standard_error_all' = sqrt(mean(any_paralytic_ever) * (1 - mean(any_paralytic_ever)) / n())
-  ) |>
-  relocate(site, n_hospitals, .before = study_month)
-write_csv(paralytics_per_month_by_hospital, paste0(project_location, '/project_output/', site,'_paralytics_per_month_hospital.csv'))
+# #Create a Table of N of Patients and Number paralyzed Per Study Month Per Hospital
+# paralytics_per_month_by_hospital <- rose_analytic_df |> 
+#   group_by(study_month, hospital_id) |>
+#   summarise(
+#     'site' = site,
+#     'n_hospitals' = n_hospitals,
+#     'year' = mean(year),
+#     'calendar_month' = mean(calendar_month),
+#     'study_period' = max(study_period),
+#     'n_patients' = n(),
+#     'n_paralytics_12_hr' = sum(any_paralytic_12),
+#     'paralytics_12_hr_percent' = mean(any_paralytic_12),
+#     'standard_error_12' = sqrt(mean(any_paralytic_12) * (1 - mean(any_paralytic_12)) / n()),
+#     'n_paralytics_24_hr' = sum(any_paralytic_24),
+#     'paralytics_24_hr_percent' = mean(any_paralytic_24),
+#     'standard_error_24' = sqrt(mean(any_paralytic_24) * (1 - mean(any_paralytic_24)) / n()),
+#     'n_paralytics_48_hr' = sum(any_paralytic_48),
+#     'paralytics_48_hr_percent' = mean(any_paralytic_48),
+#     'standard_error_48' = sqrt(mean(any_paralytic_48) * (1 - mean(any_paralytic_48)) / n()),
+#     'n_paralytics_72_hr' = sum(any_paralytic_72),
+#     'paralytics_72_hr_percent' = mean(any_paralytic_72),
+#     'standard_error_72' = sqrt(mean(any_paralytic_72) * (1 - mean(any_paralytic_72)) / n()),
+#     'n_paralytics_all' = sum(any_paralytic_ever),
+#     'paralytics_percent_all' = mean(any_paralytic_ever),
+#     'standard_error_all' = sqrt(mean(any_paralytic_ever) * (1 - mean(any_paralytic_ever)) / n())
+#   ) |>
+#   relocate(site, n_hospitals, .before = study_month)
+# write_csv(paralytics_per_month_by_hospital, paste0(project_location, '/project_output_UPLOAD/', site,'_paralytics_per_month_hospital.csv'))
 
 
 #Repeat Per Study Period
@@ -313,7 +332,7 @@ paralytics_per_period <- rose_analytic_df |>
     'standard_error_all' = sqrt(mean(any_paralytic_ever) * (1 - mean(any_paralytic_ever)) / n())
   ) |>
   relocate(site, n_hospitals, .before = study_period)
-write_csv(paralytics_per_period, paste0(project_location, '/project_output/', site,'_paralytics_per_period.csv'))
+write_csv(paralytics_per_period, paste0(project_location, '/project_output_UPLOAD/', site,'_paralytics_per_period.csv'))
 
 #Repeat Per Study Quarter
 paralytics_per_quarter <- rose_analytic_df |> 
@@ -341,38 +360,37 @@ paralytics_per_quarter <- rose_analytic_df |>
     'standard_error_all' = sqrt(mean(any_paralytic_ever) * (1 - mean(any_paralytic_ever)) / n())
    ) |>
   relocate(site, n_hospitals, .before = study_quarter)
-write_csv(paralytics_per_quarter, paste0(project_location, '/project_output/', site,'_paralytics_per_quarter.csv'))
 
-#Repeat Per Study Period and sars_cov2_status
-paralytics_per_quarter_sarscov2 <- rose_analytic_df |> 
-  mutate(sars_cov2_positive=fcase(
-    sars_cov2_positive=='Positive', 'COVID', 
-    default = 'Not COVID'
-  )) |>
-  group_by(study_quarter, sars_cov2_positive) |>
-  summarise(
-    'site' = site,
-    'n_hospitals' = n_hospitals,
-    'study_period' = max(study_period),
-    'n_patients' = n(),
-    'n_paralytics_12_hr' = sum(any_paralytic_12),
-    'paralytics_12_hr_percent' = mean(any_paralytic_12),
-    'standard_error_12' = sqrt(mean(any_paralytic_12) * (1 - mean(any_paralytic_12)) / n()),
-    'n_paralytics_24_hr' = sum(any_paralytic_24),
-    'paralytics_24_hr_percent' = mean(any_paralytic_24),
-    'standard_error_24' = sqrt(mean(any_paralytic_24) * (1 - mean(any_paralytic_24)) / n()),
-    'n_paralytics_48_hr' = sum(any_paralytic_48),
-    'paralytics_48_hr_percent' = mean(any_paralytic_48),
-    'standard_error_48' = sqrt(mean(any_paralytic_48) * (1 - mean(any_paralytic_48)) / n()),
-    'n_paralytics_72_hr' = sum(any_paralytic_72),
-    'paralytics_72_hr_percent' = mean(any_paralytic_72),
-    'standard_error_72' = sqrt(mean(any_paralytic_72) * (1 - mean(any_paralytic_72)) / n()),
-    'n_paralytics_all' = sum(any_paralytic_ever),
-    'paralytics_percent_all' = mean(any_paralytic_ever),
-    'standard_error_all' = sqrt(mean(any_paralytic_ever) * (1 - mean(any_paralytic_ever)) / n())
-      ) |>
-  relocate(site, n_hospitals, .before = sars_cov2_positive)
-write_csv(paralytics_per_quarter_sarscov2, paste0(project_location, '/project_output/', site,'_paralytics_per_quarter-sarscoV2_status.csv'))
+# #Repeat Per Study Period and sars_cov2_status
+# paralytics_per_quarter_sarscov2 <- rose_analytic_df |> 
+#   mutate(sars_cov2_positive=fcase(
+#     sars_cov2_positive=='Positive', 'COVID', 
+#     default = 'Not COVID'
+#   )) |>
+#   group_by(study_quarter, sars_cov2_positive) |>
+#   summarise(
+#     'site' = site,
+#     'n_hospitals' = n_hospitals,
+#     'study_period' = max(study_period),
+#     'n_patients' = n(),
+#     'n_paralytics_12_hr' = sum(any_paralytic_12),
+#     'paralytics_12_hr_percent' = mean(any_paralytic_12),
+#     'standard_error_12' = sqrt(mean(any_paralytic_12) * (1 - mean(any_paralytic_12)) / n()),
+#     'n_paralytics_24_hr' = sum(any_paralytic_24),
+#     'paralytics_24_hr_percent' = mean(any_paralytic_24),
+#     'standard_error_24' = sqrt(mean(any_paralytic_24) * (1 - mean(any_paralytic_24)) / n()),
+#     'n_paralytics_48_hr' = sum(any_paralytic_48),
+#     'paralytics_48_hr_percent' = mean(any_paralytic_48),
+#     'standard_error_48' = sqrt(mean(any_paralytic_48) * (1 - mean(any_paralytic_48)) / n()),
+#     'n_paralytics_72_hr' = sum(any_paralytic_72),
+#     'paralytics_72_hr_percent' = mean(any_paralytic_72),
+#     'standard_error_72' = sqrt(mean(any_paralytic_72) * (1 - mean(any_paralytic_72)) / n()),
+#     'n_paralytics_all' = sum(any_paralytic_ever),
+#     'paralytics_percent_all' = mean(any_paralytic_ever),
+#     'standard_error_all' = sqrt(mean(any_paralytic_ever) * (1 - mean(any_paralytic_ever)) / n())
+#       ) |>
+#   relocate(site, n_hospitals, .before = sars_cov2_positive)
+# write_csv(paralytics_per_quarter_sarscov2, paste0(project_location, '/project_output_UPLOAD/', site,'_paralytics_per_quarter-sarscoV2_status.csv'))
 
 #Create a Histogram of Admissions Per Study Month by Hospital
 #Create Month Labels - Will Use Study Specific Min and Max Months to Select The Right Grouping
@@ -397,7 +415,10 @@ month_labels <- c(
 'Sep23', 'Oct23', 'Nov23', 'Dec23',
 'Jan24', 'Feb24', 'Mar24', 'Apr24', 
 'May24', 'Jun24', 'Jul24', 'Aug24', 
-'Sep24', 'Oct24', 'Nov24', 'Dec24')
+'Sep24', 'Oct24', 'Nov24', 'Dec24', 
+'Jan25', 'Feb25', 'Mar25', 'Apr25', 
+'May25', 'Jun25', 'Jul25', 'Aug25', 
+'Sep25', 'Oct25', 'Nov25', 'Dec25')
 
 #Select the Relevant Months from This Vector Using the min_month, max_month
 site_month_labels <- month_labels[min_month:max_month]
@@ -414,7 +435,7 @@ ggplot(rose_analytic_df, aes(x=study_month, fill=hospital_id)) +
   scale_y_continuous(name = 'Number of Admissions') +
   scale_fill_viridis_d()
 ggsave(paste0(site, '_enrollment_per_month.pdf'),
-       path = paste0(project_location, '/project_output/graphs/'))
+       path = paste0(project_location, '/project_output_UPLOAD/graphs/'))
 
 #Now Plot by sars_cov2_status
 ggplot(rose_analytic_df, aes(x=study_month, fill=factor(sars_cov2_positive))) +
@@ -427,11 +448,91 @@ ggplot(rose_analytic_df, aes(x=study_month, fill=factor(sars_cov2_positive))) +
   scale_y_continuous(name = 'Number of Admissions') +
   scale_fill_viridis_d()
 ggsave('admits_by_month_by_covid.pdf',
-       path = paste0(project_location, '/project_output/graphs/'))
+       path = paste0(project_location, '/project_output_UPLOAD/graphs/'))
 
 ```
 
-```{r Table 1 by Period and By Hospital}
+
+
+```{r}
+#Create a Table of N of Patients and Number proned  Per Study Month
+prone_per_month <- rose_analytic_df |> 
+  group_by(study_month) |>
+  summarise(
+    'site' = site,
+    'n_hospitals' = n_hospitals,
+    'year' = mean(year),
+    'calendar_month' = mean(calendar_month),
+    'study_period' = max(study_period),
+    'n_patients' = n(),
+    'n_prone_48_hr' = sum(prone_48),
+    'prone_48_hr_percent' = mean(prone_48),
+    'prone_standard_error_48' = sqrt(mean(prone_48) * (1 - mean(prone_48)) / n()),
+    'n_prone_all' = sum(prone_all),
+    'prone_percent_all' = mean(prone_all),
+    'prone_standard_error_all' = sqrt(mean(prone_all) * (1 - mean(prone_all)) / n())
+  ) |>
+  relocate(site, n_hospitals, .before = study_month)
+#write_csv(prone_per_month, paste0(project_location, '/project_output_UPLOAD/', site,'_prone_per_month.csv'))
+
+#Repeat Per Study Quarter
+prone_per_quarter <- rose_analytic_df |> 
+  group_by(study_quarter) |>
+  summarise(
+    'site' = site,
+    'n_hospitals' = n_hospitals,
+    'study_period' = max(study_period),
+    'n_patients' = n(),
+    'sars_cov2_positive' = sum(sars_cov2_positive=='Positive', na.rm=T),
+    'n_prone_48_hr' = sum(prone_48),
+    'prone_48_hr_percent' = mean(prone_48),
+    'prone_standard_error_48' = sqrt(mean(prone_48) * (1 - mean(prone_48)) / n()),
+    'n_prone_all' = sum(prone_all),
+    'prone_percent_all' = mean(prone_all),
+    'prone_standard_error_all' = sqrt(mean(prone_all) * (1 - mean(prone_all)) / n())
+   ) |>
+  relocate(site, n_hospitals, .before = study_quarter)
+#write_csv(prone_per_quarter, paste0(project_location, '/project_output_UPLOAD/', site,'_prone_per_quarter.csv'))
+
+
+#Create a Table of N of Patients and Number proned and paralyzed Per Study Month
+# p_and_p_per_month <- rose_analytic_df |> 
+#   group_by(study_month) |>
+#   summarise(
+#     'site' = site,
+#     'n_hospitals' = n_hospitals,
+#     'year' = mean(year),
+#     'calendar_month' = mean(calendar_month),
+#     'study_period' = max(study_period),
+#     'n_patients' = n(),
+#     'n_p_p_48_hr' = sum(p_and_p),
+#     'p_p_48_hr_percent' = mean(p_and_p),
+#     'p_p_standard_error_48' = sqrt(mean(p_and_p) * (1 - mean(p_and_p)) / n()),
+#    ) |>
+#   relocate(site, n_hospitals, .before = study_month)
+# write_csv(p_and_p_per_month, paste0(project_location, '/project_output_UPLOAD/', site,'_p_and_p_per_month.csv'))
+# 
+# #Repeat Per Study Quarter
+# p_and_p_per_quarter <- rose_analytic_df |> 
+#   group_by(study_quarter) |>
+#   summarise(
+#     'site' = site,
+#     'n_hospitals' = n_hospitals,
+#     'study_period' = max(study_period),
+#     'n_patients' = n(),
+#     'sars_cov2_positive' = sum(sars_cov2_positive=='Positive', na.rm=T),
+#     'n_p_and_p_48_hr' = sum(p_and_p),
+#     'p_and_p_48_hr_percent' = mean(p_and_p),
+#     'p_and_p_standard_error_48' = sqrt(mean(p_and_p) * (1 - mean(p_and_p)) / n()),
+#       ) |>
+#   relocate(site, n_hospitals, .before = study_quarter)
+# write_csv(p_and_p_per_quarter, paste0(project_location, '/project_output_UPLOAD/', site,'_p_and_p_per_quarter.csv'))
+
+
+```
+
+
+```{r Table 1 by Paralytic use}
 #Variables to Table 1
 to_tab <- c(
   'age_at_admission',
@@ -454,15 +555,28 @@ to_tab <- c(
   'nee_pressor_dose',
   'criteria',
   'deep_rass',
+  'min_rass12',
+  'max_rass',
+  'agitated_rass',
   'rr_diff_max',
+  'rr_diff_max_impute',
   'tv_cc_kg',
   'mv_obs_max',
+  'mv_obs_max_impute',
   'plat_max',
   'compliance_min',
   'enrollment_location_type',
   'qualify_intermittent',
   'qualify_continuous', 
-  'code_status_presume'
+  'code_status_presume',
+  'prone_48',
+  'either_dys',
+  'either_dys_impute',
+  'dys_rr',
+  'dys_rr_impute',
+  'dys_mv',
+  'dys_mv_impute',
+  'hypoxemia_dys'
 )
 
 #Factor Variables
@@ -479,44 +593,53 @@ factors_tab <- c(
   'first_rose_mode',
   'criteria',
   'deep_rass',
+  'agitated_rass',
   'enrollment_location_type',
   'qualify_intermittent',
   'qualify_continuous',
-  'code_status_presume'
-)
+  'code_status_presume',
+  'prone_48',
+  'either_dys',
+  'either_dys_impute',
+  'dys_rr',
+  'dys_rr_impute',
+  'dys_mv',
+  'dys_mv_impute',
+  'hypoxemia_dys'
+  )
 
 #First Create Table with Ranges and Additional Statistics Including Numbers of Missing and Min/Max
 tab1 <- CreateTableOne(vars = to_tab, data=rose_analytic_df, factorVars = factors_tab)
 summary(tab1) 
 
-#Now Create a Traditional Table 1, One Stratified by Period and One Stratified by Hospital
+#Now Create a Traditional Table 1, stratified by paralytic use in 48h
 tab1 <- CreateTableOne(vars = to_tab, strata="any_paralytic_48", data=rose_analytic_df, factorVars = factors_tab, addOverall = TRUE) 
-print(tab1)
+#print(tab1)
 tab1_excel <- as.data.frame(print(tab1, printToggle = FALSE, missing = TRUE)) |>
   mutate(site = site) |>
   relocate(site, .before = Overall) |>
   rownames_to_column('characteristic') |>
   rename(percent_missing = Missing) |>
   select(-test)
-write.csv(tab1_excel, file=paste0(project_location, '/project_output/', site, '_Table1_by_Paralytics.csv'))
+write.csv(tab1_excel, file=paste0(project_location, '/project_output_UPLOAD/', site, '_Table1_by_Paralytics.csv'))
 rm(tab1_excel)
 
-#Now Table 1 stratified by pre/post-ROSE study period
+#Now Table 1 stratified by study period
 tab1 <- CreateTableOne(vars = to_tab, strata="study_period", data=rose_analytic_df, factorVars = factors_tab, addOverall = TRUE) 
-print(tab1)
+#print(tab1)
 tab1_excel <- as.data.frame(print(tab1, printToggle = FALSE, missing = TRUE)) |>
   mutate(site = site) |>
   relocate(site, .before = Overall) |>
   rownames_to_column('characteristic') |>
   rename(percent_missing = Missing) |>
   select(-test)
-write.csv(tab1_excel, file=paste0(project_location, '/project_output/', site, '_Table1_by_Period.csv'))
+write.csv(tab1_excel, file=paste0(project_location, '/project_output_UPLOAD/', site, '_Table1_by_Period.csv'))
 rm(tab1_excel)
 
 #Now Table 1, One Stratified by Hospital
 if (n_hospitals>1) {
 tab1 <- CreateTableOne(vars = to_tab, strata="hospital_id", data=rose_analytic_df, factorVars = factors_tab, addOverall = TRUE) 
-print(tab1)
+#print(tab1)
 tab1_excel <- as.data.frame(print(tab1, printToggle = FALSE, missing = TRUE)) |>
   mutate(site = site) |>
   relocate(site, .before = Overall) |>
@@ -525,19 +648,33 @@ tab1_excel <- as.data.frame(print(tab1, printToggle = FALSE, missing = TRUE)) |>
   select(-test)
 } else {
 tab1 <- CreateTableOne(vars = to_tab, data=rose_analytic_df, factorVars = factors_tab, addOverall = TRUE) 
-print(tab1)
+#print(tab1)
 tab1_excel <- as.data.frame(print(tab1, printToggle = FALSE, missing = TRUE)) |>
   mutate(site = site) |>
   relocate(site, .before = Overall) |>
   rownames_to_column('characteristic') |>
   rename(percent_missing = Missing)
 }
-write.csv(tab1_excel, file=paste0(project_location, '/project_output/', site, '_Table1_by_Hospital.csv'))
+#write.csv(tab1_excel, file=paste0(project_location, '/project_output_UPLOAD/', site, '_Table1_by_Hospital.csv'))
+#not shared to preserve small count #s. still generated for quality control. 
+rm(tab1_excel)
+
+#Now Table 1 stratified by proning use
+tab1 <- CreateTableOne(vars = to_tab, strata="prone_48", data=rose_analytic_df, factorVars = factors_tab, addOverall = TRUE) 
+#print(tab1)
+tab1_excel <- as.data.frame(print(tab1, printToggle = FALSE, missing = TRUE)) |>
+  mutate(site = site) |>
+  relocate(site, .before = Overall) |>
+  rownames_to_column('characteristic') |>
+  rename(percent_missing = Missing) |>
+  select(-test)
+#write.csv(tab1_excel, file=paste0(project_location, '/project_output_UPLOAD/', site, '_Table1_by_Proning.csv'))
+#not shared to preserve small count #s. still generated for quality control. 
 rm(tab1_excel)
 
 ```
 
-```{r Visualize Paralytics Over Time}
+```{r Visualize Paralytics Use Over Time}
 #Graph the Proning Rate by Study Quarter with Error Bars for Standard Error
 #Create Labels for Study Quarter
 quarter_labels <- c(
@@ -547,163 +684,323 @@ quarter_labels <- c(
 '2021:1-3', '2021:4-6', '2021:7-9', '2021:10-12',
 '2022:1-3', '2022:4-6', '2022:7-9', '2022:10-12',
 '2023:1-3', '2023:4-6', '2023:7-9', '2023:10-12',
-'2024:1-3', '2024:4-6', '2024:7-9', '2024:10-12')
+'2024:1-3', '2024:4-6', '2024:7-9', '2024:10-12', 
+'2025:1-3', '2025:4-6', '2025:7-9', '2025:10-12')
 study_quarter_labels <- quarter_labels[min_quarter:max_quarter]
 
-base_plot <- ggplot(paralytics_per_quarter, aes(x=study_quarter, y=paralytics_48_hr_percent)) +
-  geom_errorbar(aes(ymin = paralytics_48_hr_percent - standard_error_48, ymax = paralytics_48_hr_percent + 
-                      standard_error_48), width = 0.1, alpha = 0.5, color = 'grey') +
-  geom_point() +
-  geom_line() +
-  scale_y_continuous(breaks=seq(0,1, by=0.1), 
-                     labels = scales::percent, 
-                     limits = c(0,1.0),
-                     name = 'Paralyzed within 48 Hours of Meeting Study Criteria') +
-  scale_x_continuous(breaks=seq(min_quarter, max_quarter, by=1),
-                     labels = study_quarter_labels,
-                     limits = c(min_quarter, max_quarter),
-                     name = 'Year: Months') +
-  theme_classic() + # theme_classic call
-  theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust = 1)) # custom x-axis text
-
-#Now Add Annotations and Vertical Lines to Plot Based on What Data a Site Has Contributed
-if (site_type == "Pre-ROSE,Post-ROSE") { #If Site Has Full Study Period (2018-2023)
-  extended <- base_plot +
-    geom_vline(xintercept = 7, linetype = 2) +
-    annotate("text", x=3.333333, y=0.95, label = 'Pre-ROSE') +
-    annotate("text", x=18, y=0.95, label = 'Post-ROSE') 
-} else if (site_type == "Post-ROSE") {
-  extended <- base_plot + 
-    geom_vline(xintercept = 7, linetype = 2) +
-    annotate("text", x=18, y=0.95, label = 'Post-ROSE') 
-} else {
-  extended <- base_plot
-}
-# Display the extended plot
-extended
-ggsave(paste0(site, '_paralytics_by_quarter_48.pdf'),
-       path = paste0(project_location, '/project_output/graphs/'))
-
-#Repeat for paralytics within 24h
-base_plot_24 <- ggplot(paralytics_per_quarter, aes(x=study_quarter, y=paralytics_24_hr_percent)) +
-  geom_errorbar(aes(ymin = paralytics_24_hr_percent - standard_error_24, ymax = paralytics_24_hr_percent + 
-                      standard_error_24), width = 0.1, alpha = 0.5, color = 'grey') +
-  geom_point() +
-  geom_line() +
-  scale_y_continuous(breaks=seq(0,1, by=0.1), 
-                     labels = scales::percent, 
-                     limits = c(0,1.0),
-                     name = 'Paralyzed within 24 Hours of Meeting Study Criteria') +
-  scale_x_continuous(breaks=seq(min_quarter, max_quarter, by=1),
-                     labels = study_quarter_labels,
-                     limits = c(min_quarter, max_quarter),
-                     name = 'Year: Months') +
-  theme_classic() + # theme_classic call
-  theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust = 1)) # custom x-axis text
-
-#Now Add Annotations and Verticle Lines to Plot Based on What Data a Site Has Contributed
-if (site_type == "Pre-ROSE,Post-ROSE") { #If Site Has Full Study Period (2018-2023)
-  extended <- base_plot_24 +
-    geom_vline(xintercept = 7, linetype = 2) +
-    annotate("text", x=3.333333, y=0.95, label = 'Pre-ROSE') +
-    annotate("text", x=18, y=0.95, label = 'Post-ROSE') 
-} else if (site_type == "Post-ROSE") {
-  extended <- base_plot_24 + 
-    geom_vline(xintercept = 7, linetype = 2) +
-    annotate("text", x=18, y=0.95, label = 'Post-ROSE') 
-} else {
-  extended <- base_plot_24
-}
-# Display the extended plot
-extended
-ggsave(paste0(site, '_paralytics_by_quarter_24.pdf'),
-       path = paste0(project_location, '/project_output/graphs/'))
-
-
-#Repeat for paralytics within 72h 
-base_plot_72 <- ggplot(paralytics_per_quarter, aes(x=study_quarter, y=paralytics_72_hr_percent)) +
-  geom_errorbar(aes(ymin = paralytics_72_hr_percent - standard_error_72, ymax = paralytics_72_hr_percent + 
-                      standard_error_72), width = 0.1, alpha = 0.5, color = 'grey') +
-  geom_point() +
-  geom_line() +
-  scale_y_continuous(breaks=seq(0,1, by=0.1), 
-                     labels = scales::percent, 
-                     limits = c(0,1.0),
-                     name = 'Paralyzed within 72 Hours of Meeting Study Criteria') +
-  scale_x_continuous(breaks=seq(min_quarter, max_quarter, by=1),
-                     labels = study_quarter_labels,
-                     limits = c(min_quarter, max_quarter),
-                     name = 'Year: Months') +
-  theme_classic() + # theme_classic call
-  theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust = 1)) # custom x-axis text
-
-#Now Add Annotations and Verticle Lines to Plot Based on What Data a Site Has Contributed
-if (site_type == "Pre-ROSE,Post-ROSE") { #If Site Has Full Study Period (2018-2023)
-  extended <- base_plot_72 +
-    geom_vline(xintercept = 7, linetype = 2) +
-    annotate("text", x=3.333333, y=0.95, label = 'Pre-ROSE') +
-    annotate("text", x=18, y=0.95, label = 'Post-ROSE') 
-} else if (site_type == "Post-ROSE") {
-  extended <- base_plot_72 + 
-    geom_vline(xintercept = 7, linetype = 2) +
-    annotate("text", x=18, y=0.95, label = 'Post-ROSE') 
-} else {
-  extended <- base_plot_72
-}
-# Display the extended plot
-extended
-ggsave(paste0(site, '_paralytics_by_quarter_72.pdf'),
-       path = paste0(project_location, '/project_output/graphs/'))
-
-#Repeat for any paralytic use among patients in cohort
-base_plot_all <- ggplot(paralytics_per_quarter, aes(x=study_quarter, y=paralytics_percent_all)) +
-  geom_errorbar(aes(ymin = paralytics_percent_all - standard_error_all, ymax = paralytics_percent_all + 
-                      standard_error_all), width = 0.1, alpha = 0.5, color = 'grey') +
-  geom_point() +
-  geom_line() +
-  scale_y_continuous(breaks=seq(0,1, by=0.1), 
-                     labels = scales::percent, 
-                     limits = c(0,1.0),
-                     name = 'Paralyzed Anytime After Meeting Study Criteria') +
-  scale_x_continuous(breaks=seq(min_quarter, max_quarter, by=1),
-                     labels = study_quarter_labels,
-                     limits = c(min_quarter, max_quarter),
-                     name = 'Year: Months') +
-  theme_classic() + # theme_classic call
-  theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust = 1)) # custom x-axis text
-
-#Now Add Annotations and Verticle Lines to Plot Based on What Data a Site Has Contributed
-if (site_type == "Pre-ROSE,Post-ROSE") { #If Site Has Full Study Period (2018-2023)
-  extended <- base_plot_all +
-    geom_vline(xintercept = 7, linetype = 2) +
-    annotate("text", x=3.333333, y=0.95, label = 'Pre-ROSE') +
-    annotate("text", x=18, y=0.95, label = 'Post-ROSE') 
-} else if (site_type == "Post-ROSE") {
-  extended <- base_plot_all + 
-    geom_vline(xintercept = 7, linetype = 2) +
-    annotate("text", x=18, y=0.95, label = 'Post-ROSE') 
-} else {
-  extended <- base_plot_all
-}
-# Display the extended plot
-extended
-ggsave(paste0(site, '_paralytics_by_quarter_all.pdf'),
-       path = paste0(project_location, '/project_output/graphs/'))
-
+# base_plot <- ggplot(paralytics_per_quarter, aes(x=study_quarter, y=paralytics_48_hr_percent)) +
+#   geom_errorbar(aes(ymin = paralytics_48_hr_percent - standard_error_48, ymax = paralytics_48_hr_percent + 
+#                       standard_error_48), width = 0.1, alpha = 0.5, color = 'grey') +
+#   geom_point() +
+#   geom_line() +
+#   scale_y_continuous(breaks=seq(0,1, by=0.1), 
+#                      labels = scales::percent, 
+#                      limits = c(0,1.0),
+#                      name = 'Paralyzed within 48 Hours of Meeting Study Criteria') +
+#   scale_x_continuous(breaks=seq(min_quarter, max_quarter, by=1),
+#                      labels = study_quarter_labels,
+#                      limits = c(min_quarter, max_quarter),
+#                      name = 'Year: Months') +
+#   theme_classic() + # theme_classic call
+#   theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust = 1)) # custom x-axis text
+# 
+# #Now Add Annotations and Vertical Lines to Plot Based on What Data a Site Has Contributed
+# if (site_type == "Pre-ROSE/Pre-COVID,Post-ROSE/COVID,Post-ROSE/Post-COVID") { #If Site Has Full Study Period (2018-2025)
+#   extended <- base_plot +
+#     geom_vline(xintercept = 9, linetype = 2) +
+#     geom_vline(xintercept = 17, linetype = 2) +
+#     annotate("text", x=4.333333, y=0.95, label = 'Pre-ROSE \nPre-COVID') +
+#     annotate("text", x=13, y=0.95, label = 'Post-ROSE \nCOVID') +
+#     annotate("text", x=21.333333, y=0.95, label = 'Post-ROSE \nPost-COVID')
+# } else if (site_type == "Post-ROSE/COVID,Post-ROSE/Post-COVID") {
+#   extended <- base_plot + 
+#     geom_vline(xintercept = 9, linetype = 2) +
+#     geom_vline(xintercept = 17, linetype = 2) +
+#     annotate("text", x=13, y=0.95, label = 'Post-ROSE \nCOVID') +
+#     annotate("text", x=21.333333, y=0.95, label = 'Post-ROSE \nPost-COVID')
+# } else {
+#   extended <- base_plot
+# }
+# 
+# # Display the extended plot
+# extended
+# ggsave(paste0(site, '_paralytics_by_quarter_48.pdf'),
+#        path = paste0(project_location, '/project_output_UPLOAD/graphs/'))
+# 
+# #Repeat for paralytics within 24h
+# base_plot_24 <- ggplot(paralytics_per_quarter, aes(x=study_quarter, y=paralytics_24_hr_percent)) +
+#   geom_errorbar(aes(ymin = paralytics_24_hr_percent - standard_error_24, ymax = paralytics_24_hr_percent + 
+#                       standard_error_24), width = 0.1, alpha = 0.5, color = 'grey') +
+#   geom_point() +
+#   geom_line() +
+#   scale_y_continuous(breaks=seq(0,1, by=0.1), 
+#                      labels = scales::percent, 
+#                      limits = c(0,1.0),
+#                      name = 'Paralyzed within 24 Hours of Meeting Study Criteria') +
+#   scale_x_continuous(breaks=seq(min_quarter, max_quarter, by=1),
+#                      labels = study_quarter_labels,
+#                      limits = c(min_quarter, max_quarter),
+#                      name = 'Year: Months') +
+#   theme_classic() + # theme_classic call
+#   theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust = 1)) # custom x-axis text
+# 
+# #Now Add Annotations and Verticle Lines to Plot Based on What Data a Site Has Contributed
+# if (site_type == "Pre-ROSE/Pre-COVID,Post-ROSE/COVID,Post-ROSE/Post-COVID") { #If Site Has Full Study Period (2018-2025)
+#   extended <- base_plot_24 +
+#     geom_vline(xintercept = 9, linetype = 2) +
+#     geom_vline(xintercept = 17, linetype = 2) +
+#     annotate("text", x=4.333333, y=0.95, label = 'Pre-ROSE \nPre-COVID') +
+#     annotate("text", x=13, y=0.95, label = 'Post-ROSE \nCOVID') +
+#     annotate("text", x=21.333333, y=0.95, label = 'Post-ROSE \nPost-COVID')
+# } else if (site_type == "Post-ROSE/COVID,Post-ROSE/Post-COVID") {
+#   extended <- base_plot_24 + 
+#     geom_vline(xintercept = 9, linetype = 2) +
+#     geom_vline(xintercept = 17, linetype = 2) +
+#     annotate("text", x=13, y=0.95, label = 'Post-ROSE \nCOVID') +
+#     annotate("text", x=21.333333, y=0.95, label = 'Post-ROSE \nPost-COVID')
+# } else {
+#   extended <- base_plot_24
+# }
+# 
+# # Display the extended plot
+# extended
+# ggsave(paste0(site, '_paralytics_by_quarter_24.pdf'),
+#        path = paste0(project_location, '/project_output_UPLOAD/graphs/'))
+# 
+# 
+# #Repeat for paralytics within 72h 
+# base_plot_72 <- ggplot(paralytics_per_quarter, aes(x=study_quarter, y=paralytics_72_hr_percent)) +
+#   geom_errorbar(aes(ymin = paralytics_72_hr_percent - standard_error_72, ymax = paralytics_72_hr_percent + 
+#                       standard_error_72), width = 0.1, alpha = 0.5, color = 'grey') +
+#   geom_point() +
+#   geom_line() +
+#   scale_y_continuous(breaks=seq(0,1, by=0.1), 
+#                      labels = scales::percent, 
+#                      limits = c(0,1.0),
+#                      name = 'Paralyzed within 72 Hours of Meeting Study Criteria') +
+#   scale_x_continuous(breaks=seq(min_quarter, max_quarter, by=1),
+#                      labels = study_quarter_labels,
+#                      limits = c(min_quarter, max_quarter),
+#                      name = 'Year: Months') +
+#   theme_classic() + # theme_classic call
+#   theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust = 1)) # custom x-axis text
+# 
+# #Now Add Annotations and Verticle Lines to Plot Based on What Data a Site Has Contributed
+# if (site_type == "Pre-ROSE/Pre-COVID,Post-ROSE/COVID,Post-ROSE/Post-COVID") { #If Site Has Full Study Period (2018-2025)
+#   extended <- base_plot_72 +
+#     geom_vline(xintercept = 9, linetype = 2) +
+#     geom_vline(xintercept = 17, linetype = 2) +
+#     annotate("text", x=4.333333, y=0.95, label = 'Pre-ROSE \nPre-COVID') +
+#     annotate("text", x=13, y=0.95, label = 'Post-ROSE \nCOVID') +
+#     annotate("text", x=21.333333, y=0.95, label = 'Post-ROSE \nPost-COVID')
+# } else if (site_type == "Post-ROSE/COVID,Post-ROSE/Post-COVID") {
+#   extended <- base_plot_72 + 
+#     geom_vline(xintercept = 9, linetype = 2) +
+#     geom_vline(xintercept = 17, linetype = 2) +
+#     annotate("text", x=13, y=0.95, label = 'Post-ROSE \nCOVID') +
+#     annotate("text", x=21.333333, y=0.95, label = 'Post-ROSE \nPost-COVID')
+# } else {
+#   extended <- base_plot_72
+# }
+# 
+# # Display the extended plot
+# extended
+# ggsave(paste0(site, '_paralytics_by_quarter_72.pdf'),
+#        path = paste0(project_location, '/project_output_UPLOAD/graphs/'))
+# 
+# #Repeat for any paralytic use among patients in cohort
+# base_plot_all <- ggplot(paralytics_per_quarter, aes(x=study_quarter, y=paralytics_percent_all)) +
+#   geom_errorbar(aes(ymin = paralytics_percent_all - standard_error_all, ymax = paralytics_percent_all + 
+#                       standard_error_all), width = 0.1, alpha = 0.5, color = 'grey') +
+#   geom_point() +
+#   geom_line() +
+#   scale_y_continuous(breaks=seq(0,1, by=0.1), 
+#                      labels = scales::percent, 
+#                      limits = c(0,1.0),
+#                      name = 'Paralyzed Anytime After Meeting Study Criteria') +
+#   scale_x_continuous(breaks=seq(min_quarter, max_quarter, by=1),
+#                      labels = study_quarter_labels,
+#                      limits = c(min_quarter, max_quarter),
+#                      name = 'Year: Months') +
+#   theme_classic() + # theme_classic call
+#   theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust = 1)) # custom x-axis text
+# 
+# #Now Add Annotations and Verticle Lines to Plot Based on What Data a Site Has Contributed
+# if (site_type == "Pre-ROSE/Pre-COVID,Post-ROSE/COVID,Post-ROSE/Post-COVID") { #If Site Has Full Study Period (2018-2025)
+#   extended <- base_plot_all +
+#     geom_vline(xintercept = 9, linetype = 2) +
+#     geom_vline(xintercept = 17, linetype = 2) +
+#     annotate("text", x=4.333333, y=0.95, label = 'Pre-ROSE \nPre-COVID') +
+#     annotate("text", x=13, y=0.95, label = 'Post-ROSE \nCOVID') +
+#     annotate("text", x=21.333333, y=0.95, label = 'Post-ROSE \nPost-COVID')
+# } else if (site_type == "Post-ROSE/COVID,Post-ROSE/Post-COVID") {
+#   extended <- base_plot_all + 
+#     geom_vline(xintercept = 9, linetype = 2) +
+#     geom_vline(xintercept = 17, linetype = 2) +
+#     annotate("text", x=13, y=0.95, label = 'Post-ROSE \nCOVID') +
+#     annotate("text", x=21.333333, y=0.95, label = 'Post-ROSE \nPost-COVID')
+# } else {
+#   extended <- base_plot_all
+# }
+# 
+# # Display the extended plot
+# extended
+# ggsave(paste0(site, '_paralytics_by_quarter_all.pdf'),
+#        path = paste0(project_location, '/project_output_UPLOAD/graphs/'))
+# 
 #Now Repeat for Month
 #Label Every 3rd Month
 tool <- seq(min_month, max_month, by=2)
 new_month_labels <- site_month_labels[tool]
+# 
+# #Paralytics within 48h meeting criteria
+# base_plot <- ggplot(paralytics_per_month, aes(x=study_month, y=paralytics_48_hr_percent)) +
+#   geom_errorbar(aes(ymin = paralytics_48_hr_percent - standard_error_48, ymax = paralytics_48_hr_percent + standard_error_48), 
+#                 width = 0.1, alpha = 0.5, color = 'grey') +
+#   geom_point() +
+#   geom_line() +
+#   scale_y_continuous(breaks=seq(0,1, by=0.1), 
+#                      labels = scales::percent, 
+#                      limits = c(0,1.0),
+#                      name = 'Paralyzed within 48 Hours of Meeting Study Criteria') +
+#   scale_x_continuous(breaks=seq(min_month, max_month, by=2),
+#                      labels = new_month_labels,
+#                      limits = c(min_month, max_month),
+#                      name = 'Month-Year') +
+#   theme_classic() + # theme_classic call
+#   theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust = 1)) # custom x-axis text
+# 
+# #Now Add Annotations and vertical Lines to Plot Based on What Data a Site Has Contributed
+# if (site_type == "Pre-ROSE/Pre-COVID,Post-ROSE/COVID,Post-ROSE/Post-COVID") { #If Site Has Full Study Period (2018-2025)
+#   extended <- base_plot +
+#     geom_vline(xintercept = 27, linetype = 2) +
+#     geom_vline(xintercept = 51, linetype = 2) +
+#     annotate("text", x=12.5, y=0.95, label = 'Pre-ROSE \nPre-COVID') +
+#     annotate("text", x=39.5, y=0.95, label = 'Post-ROSE \nCOVID') +
+#     annotate("text", x=68.5, y=0.95, label = 'Post-ROSE \nPost-COVID')
+# } else if (site_type == "Post-ROSE/COVID,Post-ROSE/Post-COVID") {
+#   extended <- base_plot + 
+#     geom_vline(xintercept = 27, linetype = 2) +
+#     geom_vline(xintercept = 51, linetype = 2) +
+#     annotate("text", x=13, y=0.95, label = 'Post-ROSE \nCOVID') +
+#     annotate("text", x=21.333333, y=0.95, label = 'Post-ROSE \nPost-COVID')
+# } else {
+#   extended <- base_plot
+# }
+# 
+# # Display the extended plot
+# extended
+# ggsave(paste0(site, '_paralytics_by_month_48.pdf'),
+#        path = paste0(project_location, '/project_output_UPLOAD/graphs/'))
 
-#Paralytics within 48h meeting criteria
-base_plot <- ggplot(paralytics_per_month, aes(x=study_month, y=paralytics_48_hr_percent)) +
+# # Monthly: any paralytics after meeting study criteria
+# base_plot_all <- ggplot(paralytics_per_month, aes(x=study_month, y=paralytics_percent_all)) +
+#   geom_errorbar(aes(ymin = paralytics_percent_all - standard_error_all, ymax = paralytics_percent_all + standard_error_all), 
+#                 width = 0.1, alpha = 0.5, color = 'grey') +
+#   geom_point() +
+#   geom_line() +
+#   scale_y_continuous(breaks=seq(0,1, by=0.1), 
+#                      labels = scales::percent, 
+#                      limits = c(0,1.0),
+#                      name = 'Paralyzed Anytime After Meeting Study Criteria') +
+#   scale_x_continuous(breaks=seq(min_month, max_month, by=2),
+#                      labels = new_month_labels,
+#                      limits = c(min_month, max_month),
+#                      name = 'Month-Year') +
+#   theme_classic() + # theme_classic call
+#   theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust = 1)) # custom x-axis text
+# 
+# #Now Add Annotations and Verticle Lines to Plot Based on What Data a Site Has Contributed
+# if (site_type == "Pre-ROSE/Pre-COVID,Post-ROSE/COVID,Post-ROSE/Post-COVID") { #If Site Has Full Study Period (2018-2025)
+#   extended <- base_plot_all +
+#     geom_vline(xintercept = 27, linetype = 2) +
+#     geom_vline(xintercept = 51, linetype = 2) +
+#     annotate("text", x=12.5, y=0.95, label = 'Pre-ROSE \nPre-COVID') +
+#     annotate("text", x=39.5, y=0.95, label = 'Post-ROSE \nCOVID') +
+#     annotate("text", x=68.5, y=0.95, label = 'Post-ROSE \nPost-COVID')
+# } else if (site_type == "Post-ROSE/COVID,Post-ROSE/Post-COVID") {
+#   extended <- base_plot_all + 
+#     geom_vline(xintercept = 27, linetype = 2) +
+#     geom_vline(xintercept = 51, linetype = 2) +
+#     annotate("text", x=13, y=0.95, label = 'Post-ROSE \nCOVID') +
+#     annotate("text", x=21.333333, y=0.95, label = 'Post-ROSE \nPost-COVID')
+# } else {
+#   extended <- base_plot_all
+# }
+# 
+# # Display the extended plot
+# extended
+# ggsave(paste0(site, '_paralytics_by_month_all.pdf'),
+#        path = paste0(project_location, '/project_output_UPLOAD/graphs/'))
+# 
+# ##Finally Plot By SARS-COV2 and Period
+# base_plot_covid <- ggplot(paralytics_per_quarter_sarscov2, aes(x = study_quarter, y = paralytics_48_hr_percent)) +
+#   geom_errorbar(aes(ymin = paralytics_48_hr_percent - standard_error_12,
+#                     ymax = paralytics_48_hr_percent + standard_error_12),
+#                 width = 0.1, alpha = 0.5, color = 'grey') +
+#   geom_point(aes(color = sars_cov2_positive)) +
+#   geom_line(aes(color = sars_cov2_positive, group = sars_cov2_positive)) +
+#   scale_y_continuous(breaks=seq(0,1, by=0.1), 
+#                      labels = scales::percent, 
+#                      limits = c(0,1.0),
+#                      name = 'Paralyzed within 48 Hours of Meeting Study Criteria') +
+#   scale_x_continuous(breaks=seq(min_quarter, max_quarter, by=1),
+#                      labels = study_quarter_labels,
+#                      limits = c(min_quarter, max_quarter),
+#                      name = 'Year: Months') +
+#   labs(color = "Patient SARS-CoV2 Status") +
+#   scale_color_discrete(labels = c("Positive", "Negative/Unknown or Pre-COVID")) +
+#   theme_classic() + # theme_classic call
+#   theme(
+#     axis.text.x = element_text(angle = 45, vjust = 1, hjust = 1),
+#     legend.title = element_text(size = rel(0.50)),
+#     legend.text  = element_text(size = rel(0.50)),
+#     legend.key.size = unit(0.50, "lines")
+#   )
+# 
+# #Now Add Annotations and Vertical Lines to Plot Based on What Data a Site Has Contributed
+# if (site_type == "Pre-ROSE/Pre-COVID,Post-ROSE/COVID,Post-ROSE/Post-COVID") { #If Site Has Full Study Period (2018-2025)
+#   extended <- base_plot_covid +
+#     geom_vline(xintercept = 9, linetype = 2) +
+#     geom_vline(xintercept = 17, linetype = 2) +
+#     annotate("text", x=4.333333, y=0.95, label = 'Pre-ROSE \nPre-COVID') +
+#     annotate("text", x=13, y=0.95, label = 'Post-ROSE \nCOVID') +
+#     annotate("text", x=21.333333, y=0.95, label = 'Post-ROSE \nPost-COVID')
+# } else if (site_type == "Post-ROSE/COVID,Post-ROSE/Post-COVID") {
+#   extended <- base_plot_covid + 
+#     geom_vline(xintercept = 9, linetype = 2) +
+#     geom_vline(xintercept = 17, linetype = 2) +
+#     annotate("text", x=13, y=0.95, label = 'Post-ROSE \nCOVID') +
+#     annotate("text", x=21.333333, y=0.95, label = 'Post-ROSE \nPost-COVID')
+# } else {
+#   extended <- base_plot_covid
+# }
+#
+# Display the extended plot
+#extended
+#ggsave(paste0(site, '_paralytics_by_quarter_48_bycovid.pdf'),
+#       path = paste0(project_location, '/project_output_UPLOAD/graphs/'))
+
+paralytics_per_month<- left_join(paralytics_per_month, prone_per_month)
+#paralytics_per_month<- left_join(paralytics_per_month, p_and_p_per_month)
+paralytics_per_quarter<- left_join(paralytics_per_quarter, prone_per_quarter)
+#paralytics_per_quarter<- left_join(paralytics_per_quarter, p_and_p_per_quarter)
+write_csv(paralytics_per_month, paste0(project_location, '/project_output_UPLOAD/', site,'_paralytics_per_month.csv'))
+write_csv(paralytics_per_quarter, paste0(project_location, '/project_output_UPLOAD/', site,'_paralytics_per_quarter.csv'))
+
+#Paralytics/prone/both on same graph within 48h meeting criteria
+base_plot <- ggplot(paralytics_per_month, aes(x=study_month)) +
+  geom_line(aes(y=paralytics_48_hr_percent), color="blue") + 
+  geom_line(aes(y=prone_48_hr_percent), color="red") + 
   geom_errorbar(aes(ymin = paralytics_48_hr_percent - standard_error_48, ymax = paralytics_48_hr_percent + standard_error_48), 
                 width = 0.1, alpha = 0.5, color = 'grey') +
-  geom_point() +
-  geom_line() +
+  geom_errorbar(aes(ymin = prone_48_hr_percent - prone_standard_error_48, ymax = prone_48_hr_percent + prone_standard_error_48), 
+                width = 0.1, alpha = 0.5, color = 'grey') +
+  geom_point(aes(y=paralytics_48_hr_percent)) +
+  geom_point(aes(y=prone_48_hr_percent)) +
   scale_y_continuous(breaks=seq(0,1, by=0.1), 
                      labels = scales::percent, 
-                     limits = c(0,1.0),
+                     limits = c(0,1),
                      name = 'Paralyzed within 48 Hours of Meeting Study Criteria') +
   scale_x_continuous(breaks=seq(min_month, max_month, by=2),
                      labels = new_month_labels,
@@ -712,103 +1009,193 @@ base_plot <- ggplot(paralytics_per_month, aes(x=study_month, y=paralytics_48_hr_
   theme_classic() + # theme_classic call
   theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust = 1)) # custom x-axis text
 
-#Now Add Annotations and Verticle Lines to Plot Based on What Data a Site Has Contributed
-if (site_type == "Pre-ROSE,Post-ROSE") { #If Site Has Full Study Period (2018-2023)
+#Now Add Annotations and vertical Lines to Plot Based on What Data a Site Has Contributed
+if (site_type == "Pre-ROSE/Pre-COVID,Post-ROSE/COVID,Post-ROSE/Post-COVID") { #If Site Has Full Study Period (2018-2025)
   extended <- base_plot +
-    geom_vline(xintercept = 19, linetype = 2) +
-    annotate("text", x=8, y=0.95, label = 'Pre-ROSE') +
-    annotate("text", x=50, y=0.95, label = 'Post-ROSE') 
-} else if (site_type == "Post-ROSE") {
+    geom_vline(xintercept = 27, linetype = 2) +
+    geom_vline(xintercept = 51, linetype = 2) +
+    annotate("text", x=12.5, y=0.95, label = 'Pre-ROSE \nPre-COVID') +
+    annotate("text", x=39.5, y=0.95, label = 'Post-ROSE \nCOVID') +
+    annotate("text", x=68.5, y=0.95, label = 'Post-ROSE \nPost-COVID')
+} else if (site_type == "Post-ROSE/COVID,Post-ROSE/Post-COVID") {
   extended <- base_plot + 
-    geom_vline(xintercept = 19, linetype = 2) +
-    annotate("text", x=50, y=0.95, label = 'Post-ROSE') 
+    geom_vline(xintercept = 27, linetype = 2) +
+    geom_vline(xintercept = 51, linetype = 2) +
+    annotate("text", x=13, y=0.95, label = 'Post-ROSE \nCOVID') +
+    annotate("text", x=21.333333, y=0.95, label = 'Post-ROSE \nPost-COVID')
 } else {
   extended <- base_plot
 }
 
 # Display the extended plot
 extended
-ggsave(paste0(site, '_paralytics_by_month_48.pdf'),
-       path = paste0(project_location, '/project_output/graphs/'))
+ggsave(paste0(site, '_paralytics_and_prone_by_month_48.pdf'),
+       path = paste0(project_location, '/project_output_UPLOAD/graphs/'))
 
-# Monthly: any paralytics after meeting study criteria
-base_plot_all <- ggplot(paralytics_per_month, aes(x=study_month, y=paralytics_percent_all)) +
-  geom_errorbar(aes(ymin = paralytics_percent_all - standard_error_all, ymax = paralytics_percent_all + standard_error_all), 
+#prone per quarter *** this is the main figure
+base_plot <- ggplot(paralytics_per_quarter, aes(x=study_quarter)) +
+  geom_line(aes(y=paralytics_48_hr_percent), color="blue") + 
+  geom_line(aes(y=prone_48_hr_percent), color="red") + 
+  geom_errorbar(aes(ymin = paralytics_48_hr_percent - standard_error_48, ymax = paralytics_48_hr_percent + standard_error_48), 
                 width = 0.1, alpha = 0.5, color = 'grey') +
-  geom_point() +
-  geom_line() +
+  geom_errorbar(aes(ymin = prone_48_hr_percent - prone_standard_error_48, ymax = prone_48_hr_percent + prone_standard_error_48), 
+                width = 0.1, alpha = 0.5, color = 'grey') +
+  geom_point(aes(y=paralytics_48_hr_percent)) +
+  geom_point(aes(y=prone_48_hr_percent)) +
   scale_y_continuous(breaks=seq(0,1, by=0.1), 
                      labels = scales::percent, 
-                     limits = c(0,1.0),
-                     name = 'Paralyzed Anytime After Meeting Study Criteria') +
-  scale_x_continuous(breaks=seq(min_month, max_month, by=2),
-                     labels = new_month_labels,
-                     limits = c(min_month, max_month),
-                     name = 'Month-Year') +
-  theme_classic() + # theme_classic call
-  theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust = 1)) # custom x-axis text
-
-#Now Add Annotations and Verticle Lines to Plot Based on What Data a Site Has Contributed
-if (site_type == "Pre-ROSE,Post-ROSE") { #If Site Has Full Study Period (2018-2023)
-  extended <- base_plot_all +
-    geom_vline(xintercept = 19, linetype = 2) +
-    annotate("text", x=8, y=0.95, label = 'Pre-ROSE') +
-    annotate("text", x=50, y=0.95, label = 'Post-ROSE') 
-} else if (site_type == "Post-ROSE") {
-  extended <- base_plot_all + 
-    geom_vline(xintercept = 19, linetype = 2) +
-    annotate("text", x=50, y=0.95, label = 'Post-ROSE') 
-} else {
-  extended <- base_plot_all
-}
-# Display the extended plot
-extended
-ggsave(paste0(site, '_paralytics_by_month_all.pdf'),
-       path = paste0(project_location, '/project_output/graphs/'))
-
-##Finally Plot By SARS-COV2 and Period
-base_plot_covid <- ggplot(paralytics_per_quarter_sarscov2, aes(x = study_quarter, y = paralytics_48_hr_percent)) +
-  geom_errorbar(aes(ymin = paralytics_48_hr_percent - standard_error_12,
-                    ymax = paralytics_48_hr_percent + standard_error_12),
-                width = 0.1, alpha = 0.5, color = 'grey') +
-  geom_point(aes(color = sars_cov2_positive)) +
-  geom_line(aes(color = sars_cov2_positive, group = sars_cov2_positive)) +
-  scale_y_continuous(breaks=seq(0,1, by=0.1), 
-                     labels = scales::percent, 
-                     limits = c(0,1.0),
+                     limits = c(0,1),
                      name = 'Paralyzed within 48 Hours of Meeting Study Criteria') +
   scale_x_continuous(breaks=seq(min_quarter, max_quarter, by=1),
                      labels = study_quarter_labels,
                      limits = c(min_quarter, max_quarter),
                      name = 'Year: Months') +
-  labs(color = "Patient SARS-CoV2 Status") +
-  scale_color_discrete(labels = c("Positive", "Negative/Unknown or Pre-COVID")) +
   theme_classic() + # theme_classic call
-  theme(
-    axis.text.x = element_text(angle = 45, vjust = 1, hjust = 1),
-    legend.title = element_text(size = rel(0.50)),
-    legend.text  = element_text(size = rel(0.50)),
-    legend.key.size = unit(0.50, "lines")
-  )
+  theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust = 1)) # custom x-axis text
 
 #Now Add Annotations and Vertical Lines to Plot Based on What Data a Site Has Contributed
-if (site_type == "Pre-ROSE,Post-ROSE") { #If Site Has Full Study Period (2018-2024)
-  extended <- base_plot_covid +
-    geom_vline(xintercept = 7, linetype = 2) +
-    annotate("text", x=3.333333, y=0.95, label = 'Pre-ROSE') +
-    annotate("text", x=18, y=0.95, label = 'Post-ROSE') 
-} else if (site_type == "Post-ROSE") {
+if (site_type == "Pre-ROSE/Pre-COVID,Post-ROSE/COVID,Post-ROSE/Post-COVID") {#If Site Has Full Study Period (2018-2025)
+  extended <- base_plot +
+    geom_vline(xintercept = 9, linetype = 2) +
+    geom_vline(xintercept = 17, linetype = 2) +
+    annotate("text", x=4.333333, y=0.95, label = 'Pre-ROSE \nPre-COVID') +
+    annotate("text", x=13, y=0.95, label = 'Post-ROSE \nCOVID') +
+    annotate("text", x=21.333333, y=0.95, label = 'Post-ROSE \nPost-COVID')
+} else if (site_type == "Post-ROSE/COVID,Post-ROSE/Post-COVID") {
   extended <- base_plot + 
-    geom_vline(xintercept = 7, linetype = 2) +
-    annotate("text", x=18, y=0.95, label = 'Post-ROSE') 
+    geom_vline(xintercept = 9, linetype = 2) +
+    geom_vline(xintercept = 17, linetype = 2) +
+    annotate("text", x=13, y=0.95, label = 'Post-ROSE \nCOVID') +
+    annotate("text", x=21.333333, y=0.95, label = 'Post-ROSE \nPost-COVID')
 } else {
   extended <- base_plot
 }
 
 # Display the extended plot
 extended
-ggsave(paste0(site, '_paralytics_by_quarter_48_bycovid.pdf'),
-       path = paste0(project_location, '/project_output/graphs/'))
+ggsave(paste0(site, '_prone_paralytics_by_quarter_48.pdf'),
+       path = paste0(project_location, '/project_output_UPLOAD/graphs/'))
+
+# ### prone and paralytics
+# #Paralytics/prone/both on same graph within 48h meeting criteria
+# base_plot <- ggplot(paralytics_per_month, aes(x=study_month)) +
+#   geom_line(aes(y=paralytics_48_hr_percent), color="blue") + 
+#   geom_line(aes(y=prone_48_hr_percent), color="red") + 
+#   geom_line(aes(y=p_p_48_hr_percent), color="green") + 
+#   geom_errorbar(aes(ymin = paralytics_48_hr_percent - standard_error_48, ymax = paralytics_48_hr_percent + standard_error_48), width = 0.1, alpha = 0.5, color = 'grey') +
+#   geom_errorbar(aes(ymin = prone_48_hr_percent - prone_standard_error_48, ymax = prone_48_hr_percent + prone_standard_error_48), width = 0.1, alpha = 0.5, color = 'grey') +
+#   geom_errorbar(aes(ymin = p_p_48_hr_percent - p_p_standard_error_48, ymax = p_p_48_hr_percent + p_p_standard_error_48), width = 0.1, alpha = 0.5, color = 'grey') +
+#   geom_point(aes(y=paralytics_48_hr_percent)) +
+#   geom_point(aes(y=prone_48_hr_percent)) +
+#   geom_point(aes(y=p_p_48_hr_percent)) +
+#   scale_y_continuous(breaks=seq(0,1, by=0.1), 
+#                      labels = scales::percent, 
+#                      limits = c(0,1),
+#                      name = 'Paralyzed within 48 Hours of Meeting Study Criteria') +
+#   scale_x_continuous(breaks=seq(min_month, max_month, by=2),
+#                      labels = new_month_labels,
+#                      limits = c(min_month, max_month),
+#                      name = 'Month-Year') +
+#   theme_classic() + # theme_classic call
+#   theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust = 1)) # custom x-axis text
+# 
+# #Now Add Annotations and vertical Lines to Plot Based on What Data a Site Has Contributed
+# if (site_type == "Pre-ROSE/Pre-COVID,Post-ROSE/COVID,Post-ROSE/Post-COVID") { #If Site Has Full Study Period (2018-2025)
+#   extended <- base_plot +
+#     geom_vline(xintercept = 27, linetype = 2) +
+#     geom_vline(xintercept = 51, linetype = 2) +
+#     annotate("text", x=12.5, y=0.95, label = 'Pre-ROSE \nPre-COVID') +
+#     annotate("text", x=39.5, y=0.95, label = 'Post-ROSE \nCOVID') +
+#     annotate("text", x=68.5, y=0.95, label = 'Post-ROSE \nPost-COVID')
+# } else if (site_type == "Post-ROSE/COVID,Post-ROSE/Post-COVID") {
+#   extended <- base_plot + 
+#     geom_vline(xintercept = 27, linetype = 2) +
+#     geom_vline(xintercept = 51, linetype = 2) +
+#     annotate("text", x=13, y=0.95, label = 'Post-ROSE \nCOVID') +
+#     annotate("text", x=21.333333, y=0.95, label = 'Post-ROSE \nPost-COVID')
+# } else {
+#   extended <- base_plot
+# }
+# 
+# # Display the extended plot
+# extended
+# ggsave(paste0(site, 'both_paralytics_and_prone_by_month_48.pdf'),
+#        path = paste0(project_location, '/project_output_UPLOAD/graphs/'))
+# 
+# #prone per quarter
+# base_plot <- ggplot(paralytics_per_quarter, aes(x=study_quarter)) +
+#   geom_line(aes(y=paralytics_48_hr_percent), color="blue") + 
+#   geom_line(aes(y=prone_48_hr_percent), color="red") + 
+#   geom_line(aes(y=p_and_p_48_hr_percent), color="green") + 
+#   geom_errorbar(aes(ymin = paralytics_48_hr_percent - standard_error_48, ymax = paralytics_48_hr_percent + standard_error_48), 
+#                 width = 0.1, alpha = 0.5, color = 'grey') +
+#   geom_errorbar(aes(ymin = prone_48_hr_percent - prone_standard_error_48, ymax = prone_48_hr_percent + prone_standard_error_48), 
+#                 width = 0.1, alpha = 0.5, color = 'grey') +
+# geom_errorbar(aes(ymin = p_and_p_48_hr_percent - p_and_p_standard_error_48, ymax = p_and_p_48_hr_percent + p_and_p_standard_error_48), width = 0.1, alpha = 0.5, color = 'grey') +
+#   geom_point(aes(y=paralytics_48_hr_percent)) +
+#   geom_point(aes(y=prone_48_hr_percent)) +
+#     geom_point(aes(y=p_and_p_48_hr_percent)) +
+#   scale_y_continuous(breaks=seq(0,1, by=0.1), 
+#                      labels = scales::percent, 
+#                      limits = c(0,1),
+#                      name = 'Paralyzed within 48 Hours of Meeting Study Criteria') +
+#   scale_x_continuous(breaks=seq(min_quarter, max_quarter, by=1),
+#                      labels = study_quarter_labels,
+#                      limits = c(min_quarter, max_quarter),
+#                      name = 'Year: Months') +
+#   theme_classic() + # theme_classic call
+#   theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust = 1)) # custom x-axis text
+# 
+# #Now Add Annotations and Vertical Lines to Plot Based on What Data a Site Has Contributed
+# if (site_type == "Pre-ROSE/Pre-COVID,Post-ROSE/COVID,Post-ROSE/Post-COVID") { #If Site Has Full Study Period (2018-2025)
+#   extended <- base_plot +
+#     geom_vline(xintercept = 9, linetype = 2) +
+#     geom_vline(xintercept = 17, linetype = 2) +
+#     annotate("text", x=4.333333, y=0.95, label = 'Pre-ROSE \nPre-COVID') +
+#     annotate("text", x=13, y=0.95, label = 'Post-ROSE \nCOVID') +
+#     annotate("text", x=21.333333, y=0.95, label = 'Post-ROSE \nPost-COVID')
+# } else if (site_type == "Post-ROSE/COVID,Post-ROSE/Post-COVID") {
+#   extended <- base_plot + 
+#     geom_vline(xintercept = 9, linetype = 2) +
+#     geom_vline(xintercept = 17, linetype = 2) +
+#     annotate("text", x=13, y=0.95, label = 'Post-ROSE \nCOVID') +
+#     annotate("text", x=21.333333, y=0.95, label = 'Post-ROSE \nPost-COVID')
+# } else {
+#   extended <- base_plot
+# }
+# 
+# # Display the extended plot
+# extended
+# ggsave(paste0(site, 'both_prone_paralytics_by_quarter_48.pdf'),
+#        path = paste0(project_location, '/project_output_UPLOAD/graphs/'))
+
+
+```
+
+
+```{r}
+#Figure looking at breakdown of paralytics by hypoxemia/either_dysrony/proning, use imputed dyssynchrony measures
+rose_analytic_df$counter<- 1
+treemap_data<- rose_analytic_df %>% group_by(either_dys_impute, hypoxemia, prone_48) %>% mutate(total=sum(counter))
+
+treemap_data<- treemap_data %>% mutate(risk_factors=case_when(prone_48==1 & hypoxemia==1 &  either_dys_impute==1 ~" Dyssychrony, Hypoxemia, Prone", prone_48==0 & hypoxemia==1 &  either_dys_impute==1 ~" Dyssychrony, Hypoxemia", prone_48==1 &   hypoxemia==0 &  either_dys_impute==1 ~" Dyssychrony, Prone",  prone_48==0 &  hypoxemia==0 &  either_dys_impute==1 ~" Dyssychrony",  prone_48==1 &   hypoxemia==1 &  either_dys_impute==0 ~"Hypoxemia, Prone",  prone_48==0 & hypoxemia==1 &  either_dys_impute==0 ~"Hypoxemia", prone_48==1 &   hypoxemia==0 &  either_dys_impute==0 ~"Prone",  prone_48==0 &  hypoxemia==0 &  either_dys_impute==0 ~"None"))
+
+ treemap_data<- treemap_data %>% group_by(risk_factors) %>% summarise(total=first(total))
+ table(treemap_data$risk_factors, treemap_data$total, useNA = "always")
+treemap(treemap_data, index = c("risk_factors"), vSize = "total", type="index", palette="Blues", title="All Patients", algorithm = "squarified")
+
+write.csv(treemap_data, file=paste0(project_location, '/project_output_UPLOAD/', site, '_treemap_all.csv'))
+
+#Among those on paralytics
+rose_analytic_df2<- rose_analytic_df %>% filter(any_paralytic_48==1)
+treemap_data2<- rose_analytic_df2 %>% group_by(either_dys_impute, hypoxemia, prone_48) %>% mutate(total=sum(counter))
+
+treemap_data2<- treemap_data2 %>% mutate(risk_factors=case_when(prone_48==1 & hypoxemia==1 &  either_dys_impute==1 ~" Dyssychrony, Hypoxemia, Prone", prone_48==0 & hypoxemia==1 &  either_dys_impute==1 ~" Dyssychrony, Hypoxemia", prone_48==1 &   hypoxemia==0 &  either_dys_impute==1 ~" Dyssychrony, Prone",  prone_48==0 &  hypoxemia==0 &  either_dys_impute==1 ~" Dyssychrony",  prone_48==1 &   hypoxemia==1 &  either_dys_impute==0 ~"Hypoxemia, Prone",  prone_48==0 & hypoxemia==1 &  either_dys_impute==0 ~"Hypoxemia", prone_48==1 &   hypoxemia==0 &  either_dys_impute==0 ~"Prone",  prone_48==0 &  hypoxemia==0 &  either_dys_impute==0 ~"None"))
+
+treemap_data2<- treemap_data2 %>% group_by(risk_factors) %>% summarise(total=first(total))
+table(treemap_data2$risk_factors, treemap_data2$total, useNA = "always")
+treemap(treemap_data2, index = c("risk_factors"), vSize = "total", type="index", palette="Blues", title="Patients on Paralytics", algorithm = "squarified")
+write.csv(treemap_data2, file=paste0(project_location, '/project_output_UPLOAD/', site, '_treemap_on_paralytics.csv'))
 
 ```
 
@@ -843,20 +1230,32 @@ summary(tab2) #This will be in HTML File
 
 #Now Create Table 2, One Stratified by Period One by Hospital and One by Period and COVID Status
 tab2 <- CreateTableOne(vars = to_tab, strata="study_period", data=rose_analytic_df, factorVars = factors_tab, addOverall = TRUE) 
-print(tab2)
+#print(tab2)
 tab2_excel <- as.data.frame(print(tab2, printToggle = FALSE, missing = TRUE)) |>
   mutate(site = site) |>
   relocate(site, .before = Overall) |>
   rownames_to_column('characteristic') |>
   rename(percent_missing = Missing) |>
   select(-test)
-write.csv(tab2_excel, file=paste0(project_location, '/project_output/', site, '_Table_paralytics_Outcomes_Period.csv'))
+write.csv(tab2_excel, file=paste0(project_location, '/project_output_UPLOAD/', site, '_Table_paralytics_Outcomes_Period.csv'))
 rm(tab2_excel)
+
+# #Now Create Table 2, One Stratified by Proning use
+# tab2 <- CreateTableOne(vars = to_tab, strata="prone_48", data=rose_analytic_df, factorVars = factors_tab, addOverall = TRUE) 
+# #print(tab2)
+# tab2_excel <- as.data.frame(print(tab2, printToggle = FALSE, missing = TRUE)) |>
+#   mutate(site = site) |>
+#   relocate(site, .before = Overall) |>
+#   rownames_to_column('characteristic') |>
+#   rename(percent_missing = Missing) |>
+#   select(-test)
+# write.csv(tab2_excel, file=paste0(project_location, '/project_output_UPLOAD/', site, '_Table_paralytics_Outcomes_Prone.csv'))
+# rm(tab2_excel)
 
 #Now Create a Table 2, Stratified by Hospital
 if (n_hospitals>1) {
 tab2 <- CreateTableOne(vars = to_tab, strata="hospital_id", data=rose_analytic_df, factorVars = factors_tab, addOverall = TRUE) 
-print(tab2)
+#print(tab2)
 tab2_excel <- as.data.frame(print(tab2, printToggle = FALSE, missing = TRUE)) |>
   mutate(site = site) |>
   relocate(site, .before = Overall) |>
@@ -865,14 +1264,14 @@ tab2_excel <- as.data.frame(print(tab2, printToggle = FALSE, missing = TRUE)) |>
   select(-test)
 } else {
 tab2 <- CreateTableOne(vars = to_tab, data=rose_analytic_df, factorVars = factors_tab, addOverall = TRUE) 
-print(tab2)
+#print(tab2)
 tab2_excel <- as.data.frame(print(tab2, printToggle = FALSE, missing = TRUE)) |>
   mutate(site = site) |>
   relocate(site, .before = Overall) |>
   rownames_to_column('characteristic') |>
   rename(percent_missing = Missing) 
 }
-write.csv(tab2_excel, file=paste0(project_location, '/project_output/', site, '_Table_paralytics_Outcomes_by_Hospital.csv'))
+write.csv(tab2_excel, file=paste0(project_location, '/project_output_UPLOAD/', site, '_Table_paralytics_Outcomes_by_Hospital.csv'))
 rm(tab2_excel)
 
 
@@ -930,9 +1329,11 @@ rose_analytic_df <- rose_analytic_df |>
     compliance_scale = (compliance_estimate_min - 30)/5,
     compliance_scale_obs = (compliance_min - 30)/5,
     rr_diff_max_scale = rr_diff_max/5,
+    rr_diff_max_scale_impute = rr_diff_max_impute/5,
     tv_cc_kg_scale = tv_cc_kg - 6,
     min_ph_scale = (min_ph - 7.4)/.1,
     mv_obs_max_scale = (mv_obs_max -10),
+    mv_obs_max_scale_impute = (mv_obs_max_impute -10),
     plat_max_scale = (plat_estimate_max-20)/5, 
     plat_max_scale_obs = (plat_max-20)/5, 
     sofa_score_scale=(sofa_score-8))
@@ -956,7 +1357,508 @@ rose_analytic_df$nee_pressor_dose <- relevel(rose_analytic_df$nee_pressor_dose, 
 rose_analytic_df$or_before_enrollment <- factor(rose_analytic_df$or_before_enrollment)
 rose_analytic_df$ph_bad_cat <- factor(rose_analytic_df$ph_bad_cat)
 
+rose_analytic_df$study_period <- factor(rose_analytic_df$study_period)
+rose_analytic_df$study_period <- relevel(rose_analytic_df$study_period, ref = "Pre-ROSE/Pre-COVID")
 
+```
+
+
+
+```{r}
+#Univariate graphs - whole cohort
+#group by rounded pf and count up how many on paralytics
+rose_analytic_df$pfround <- round(rose_analytic_df$first_rose_pf_all)
+pf_plot<- rose_analytic_df %>% group_by(pfround) %>% summarise(total = n(), yes_count=sum(any_paralytic_48), no_count=total-yes_count, percent_yes=100 * yes_count/total)
+#ggplot(pf_plot, aes(x= pfround, y = percent_yes)) + geom_point() + theme_classic()
+write.csv(pf_plot, paste0(project_location, '/project_output_UPLOAD/', site, '_pf_plot_all.csv'))
+
+#group by MV_obs and count up how many on paralytics
+rose_analytic_df$mv_obsround <- round(rose_analytic_df$mv_obs_max)
+mv_plot<- rose_analytic_df %>% group_by(mv_obsround) %>% summarise(total = n(), yes_count=sum(any_paralytic_48), no_count=total-yes_count, percent_yes=100 * yes_count/total)
+#ggplot(mv_plot, aes(x= mv_obsround, y = percent_yes)) + geom_point() + theme_classic()
+write.csv(mv_plot, paste0(project_location, '/project_output_UPLOAD/', site, '_mv_plot_all.csv'))
+
+#group by RR_diff and count up how many on paralytics
+rr_diff_plot<- rose_analytic_df %>% group_by(rr_diff_max) %>% summarise(total = n(), yes_count=sum(any_paralytic_48), no_count=total-yes_count, percent_yes=100 * yes_count/total)
+#ggplot(rr_diff_plot, aes(x= rr_diff_max, y = percent_yes)) + geom_point() + theme_classic()
+write.csv(rr_diff_plot, paste0(project_location, '/project_output_UPLOAD/', site, '_rr_diff_plot_all.csv'))
+
+#group by min_pH and count up how many on paralytics
+min_ph_plot<- rose_analytic_df %>% group_by(min_ph) %>% summarise(total = n(), yes_count=sum(any_paralytic_48), no_count=total-yes_count, percent_yes=100 * yes_count/total)
+#ggplot(min_ph_plot, aes(x= min_ph, y = percent_yes)) + geom_point() + theme_classic()
+write.csv(min_ph_plot, paste0(project_location, '/project_output_UPLOAD/', site, '_min_ph_plot_all.csv'))
+
+#group by max_rass and count up how many on paralytics
+max_rass_plot<- rose_analytic_df %>% group_by(max_rass) %>% summarise(total = n(), yes_count=sum(any_paralytic_48), no_count=total-yes_count, percent_yes=100 * yes_count/total)
+#ggplot(max_rass_plot, aes(x= max_rass, y = percent_yes)) + geom_point() + theme_classic()
+write.csv(max_rass_plot, paste0(project_location, '/project_output_UPLOAD/', site, '_max_rass_plot_all.csv'))
+
+#group by min_rass and count up how many on paralytics
+min_rass_plot<- rose_analytic_df %>% group_by(min_rass12) %>% summarise(total = n(), yes_count=sum(any_paralytic_48), no_count=total-yes_count, percent_yes=100 * yes_count/total)
+#ggplot(min_rass_plot, aes(x= min_rass12, y = percent_yes)) + geom_point() + theme_classic()
+write.csv(min_rass_plot, paste0(project_location, '/project_output_UPLOAD/', site, '_min_rass_plot_all.csv'))
+
+# #Summary Table 
+# main_table <- bind_rows(
+#   data.frame(site = c("p_f")),
+#   pf_plot,
+#   data.frame(site = c("MV")),
+#   mv_plot,
+#   data.frame(site = c("rr_diff_plot")),
+#   rr_diff_plot,
+#   data.frame(site = c("min_ph_plot")),
+#   min_ph_plot,
+#   data.frame(site = c("max_rass_plot")),
+#   max_rass_plot,
+#   data.frame(site = c("min_rass_plot")),
+#   min_rass_plot
+# )
+# # Write the table to a CSV file
+# write.csv(main_table, paste0(project_location, '/project_output_UPLOAD/', site, '_univariate_plot_all.csv'))
+
+#Univariate graphs - proned (prone_48==1)
+proned_cohort<- rose_analytic_df %>% filter(prone_48==1)
+unproned_cohort<- rose_analytic_df %>% filter(prone_48==0)
+
+#group by rounded pf and count up how many on paralytics
+pf_plot<- proned_cohort %>% group_by(pfround) %>% summarise(total = n(), yes_count=sum(any_paralytic_48), no_count=total-yes_count, percent_yes=100 * yes_count/total)
+#ggplot(pf_plot, aes(x= pfround, y = percent_yes)) + geom_point() + theme_classic()
+#write.csv(pf_plot, paste0(project_location, '/project_output_UPLOAD/', site, '_pf_plot_proned.csv'))
+
+#group by MV_obs and count up how many on paralytics
+mv_plot<- proned_cohort %>% group_by(mv_obsround) %>% summarise(total = n(), yes_count=sum(any_paralytic_48), no_count=total-yes_count, percent_yes=100 * yes_count/total)
+#ggplot(mv_plot, aes(x= mv_obsround, y = percent_yes)) + geom_point() + theme_classic()
+#write.csv(mv_plot, paste0(project_location, '/project_output_UPLOAD/', site, '_mv_plot_proned.csv'))
+
+#group by RR_diff and count up how many on paralytics
+rr_diff_plot<- proned_cohort %>% group_by(rr_diff_max) %>% summarise(total = n(), yes_count=sum(any_paralytic_48), no_count=total-yes_count, percent_yes=100 * yes_count/total)
+#ggplot(rr_diff_plot, aes(x= rr_diff_max, y = percent_yes)) + geom_point() + theme_classic()
+#write.csv(rr_diff_plot, paste0(project_location, '/project_output_UPLOAD/', site, '_rr_diff_plot_proned.csv'))
+
+#group by min_pH and count up how many on paralytics
+min_ph_plot<- proned_cohort %>% group_by(min_ph) %>% summarise(total = n(), yes_count=sum(any_paralytic_48), no_count=total-yes_count, percent_yes=100 * yes_count/total)
+#ggplot(min_ph_plot, aes(x= min_ph, y = percent_yes)) + geom_point() + theme_classic()
+#write.csv(min_ph_plot, paste0(project_location, '/project_output_UPLOAD/', site, '_min_ph_plot_proned.csv'))
+
+#group by max_rass and count up how many on paralytics
+max_rass_plot<- proned_cohort %>% group_by(max_rass) %>% summarise(total = n(), yes_count=sum(any_paralytic_48), no_count=total-yes_count, percent_yes=100 * yes_count/total)
+#ggplot(max_rass_plot, aes(x= max_rass, y = percent_yes)) + geom_point() + theme_classic()
+#write.csv(max_rass_plot, paste0(project_location, '/project_output_UPLOAD/', site, '_max_rass_plot_proned.csv'))
+
+#group by min_rass and count up how many on paralytics
+min_rass_plot<- proned_cohort %>% group_by(min_rass12) %>% summarise(total = n(), yes_count=sum(any_paralytic_48), no_count=total-yes_count, percent_yes=100 * yes_count/total)
+#ggplot(min_rass_plot, aes(x= min_rass12, y = percent_yes)) + geom_point() + theme_classic()
+#write.csv(min_rass_plot, paste0(project_location, '/project_output_UPLOAD/', site, '_min_rass_plot_proned.csv'))
+
+# #Summary Table 
+# main_table <- bind_rows(
+#   data.frame(site = c("p_f")),
+#   pf_plot,
+#   data.frame(site = c("MV")),
+#   mv_plot,
+#   data.frame(site = c("rr_diff_plot")),
+#   rr_diff_plot,
+#   data.frame(site = c("min_ph_plot")),
+#   min_ph_plot,
+#   data.frame(site = c("max_rass_plot")),
+#   max_rass_plot,
+#   data.frame(site = c("min_rass_plot")),
+#   min_rass_plot
+# )
+# # Write the table to a CSV file
+# write.csv(main_table, paste0(project_location, '/project_output_UPLOAD/', site, '_univariate_plot_proned.csv'))
+
+#Univariate graphs - unproned cohort (prone_48==0)
+#group by rounded pf and count up how many on paralytics
+pf_plot<- unproned_cohort %>% group_by(pfround) %>% summarise(total = n(), yes_count=sum(any_paralytic_48), no_count=total-yes_count, percent_yes=100 * yes_count/total)
+#ggplot(pf_plot, aes(x= pfround, y = percent_yes)) + geom_point() + theme_classic()
+write.csv(pf_plot, paste0(project_location, '/project_output_UPLOAD/', site, '_pf_plot_unproned.csv'))
+
+#group by MV_obs and count up how many on paralytics
+mv_plot<- unproned_cohort %>% group_by(mv_obsround) %>% summarise(total = n(), yes_count=sum(any_paralytic_48), no_count=total-yes_count, percent_yes=100 * yes_count/total)
+#ggplot(mv_plot, aes(x= mv_obsround, y = percent_yes)) + geom_point() + theme_classic()
+write.csv(mv_plot, paste0(project_location, '/project_output_UPLOAD/', site, '_mv_plot_unproned.csv'))
+
+#group by RR_diff and count up how many on paralytics
+rr_diff_plot<- unproned_cohort %>% group_by(rr_diff_max) %>% summarise(total = n(), yes_count=sum(any_paralytic_48), no_count=total-yes_count, percent_yes=100 * yes_count/total)
+#ggplot(rr_diff_plot, aes(x= rr_diff_max, y = percent_yes)) + geom_point() + theme_classic()
+write.csv(rr_diff_plot, paste0(project_location, '/project_output_UPLOAD/', site, '_rr_diff_plot_unproned.csv'))
+
+#group by min_pH and count up how many on paralytics
+min_ph_plot<- unproned_cohort %>% group_by(min_ph) %>% summarise(total = n(), yes_count=sum(any_paralytic_48), no_count=total-yes_count, percent_yes=100 * yes_count/total)
+#ggplot(min_ph_plot, aes(x= min_ph, y = percent_yes)) + geom_point() + theme_classic()
+write.csv(min_ph_plot, paste0(project_location, '/project_output_UPLOAD/', site, '_min_ph_plot_unproned.csv'))
+
+#group by max_rass and count up how many on paralytics
+max_rass_plot<- unproned_cohort %>% group_by(max_rass) %>% summarise(total = n(), yes_count=sum(any_paralytic_48), no_count=total-yes_count, percent_yes=100 * yes_count/total)
+#ggplot(max_rass_plot, aes(x= max_rass, y = percent_yes)) + geom_point() + theme_classic()
+write.csv(max_rass_plot, paste0(project_location, '/project_output_UPLOAD/', site, '_max_rass_plot_unproned.csv'))
+
+#group by min_rass and count up how many on paralytics
+min_rass_plot<- unproned_cohort %>% group_by(min_rass12) %>% summarise(total = n(), yes_count=sum(any_paralytic_48), no_count=total-yes_count, percent_yes=100 * yes_count/total)
+#ggplot(min_rass_plot, aes(x= min_rass12, y = percent_yes)) + geom_point() + theme_classic()
+write.csv(min_rass_plot, paste0(project_location, '/project_output_UPLOAD/', site, '_min_rass_plot_unproned.csv'))
+
+# #Summary Table 
+# main_table <- bind_rows(
+#   data.frame(site = c("p_f")),
+#   pf_plot,
+#   data.frame(site = c("MV")),
+#   mv_plot,
+#   data.frame(site = c("rr_diff_plot")),
+#   rr_diff_plot,
+#   data.frame(site = c("min_ph_plot")),
+#   min_ph_plot,
+#   data.frame(site = c("max_rass_plot")),
+#   max_rass_plot,
+#   data.frame(site = c("min_rass_plot")),
+#   min_rass_plot
+# )
+# # Write the table to a CSV file
+# write.csv(main_table, paste0(project_location, '/project_output_UPLOAD/', site, '_univariate_plot_unproned.csv'))
+
+```
+
+
+```{r}
+#Univariate models for primary outcome. 
+# proning 
+if (n_hospitals>1) {
+model_form_step <- any_paralytic_48 ~ factor(hospital_id) + prone_48 
+main_mod <- glm(model_form_step, data = rose_analytic_df, family=binomial)
+} else {
+model_form_step <- any_paralytic_48 ~ prone_48 
+main_mod <- glm(model_form_step, data = rose_analytic_df, family=binomial, na.action = na.omit)
+}
+
+summary(main_mod)
+prone_summary <- model_summary_table(main_mod)
+
+# study period
+if (n_hospitals>1) {
+model_form_step <- any_paralytic_48 ~ factor(hospital_id) + (study_period)
+main_mod <- glm(model_form_step, data = rose_analytic_df, family=binomial)
+} else {
+model_form_step <- any_paralytic_48 ~ factor(study_period)
+main_mod <- glm(model_form_step, data = rose_analytic_df, family=binomial, na.action = na.omit)
+}
+
+summary(main_mod)
+period_summary <- model_summary_table(main_mod)
+
+
+# proning and study period
+if (n_hospitals>1) {
+model_form_step <- any_paralytic_48 ~ factor(hospital_id) + study_period + prone_48 + study_period*prone_48
+main_mod <- glm(model_form_step, data = rose_analytic_df, family=binomial)
+} else {
+model_form_step <- any_paralytic_48 ~ study_period + prone_48 + study_period*prone_48
+main_mod <- glm(model_form_step, data = rose_analytic_df, family=binomial, na.action = na.omit)
+}
+
+summary(main_mod)
+prone_period_summary <- model_summary_table(main_mod)
+
+# hypoxemia
+if (n_hospitals>1) {
+model_form_step <- any_paralytic_48 ~ factor(hospital_id) + first_rose_pf_all_scale 
+main_mod <- glm(model_form_step, data = rose_analytic_df, family=binomial)
+} else {
+model_form_step <- any_paralytic_48 ~ first_rose_pf_all_scale 
+main_mod <- glm(model_form_step, data = rose_analytic_df, family=binomial, na.action = na.omit)
+}
+
+summary(main_mod)
+hypoxemia_summary <- model_summary_table(main_mod)
+
+# mv_obs
+if (n_hospitals>1) {
+model_form_step <- any_paralytic_48 ~ factor(hospital_id) + mv_obs_max_scale 
+main_mod <- glm(model_form_step, data = rose_analytic_df, family=binomial)
+} else {
+model_form_step <- any_paralytic_48 ~ mv_obs_max_scale 
+main_mod <- glm(model_form_step, data = rose_analytic_df, family=binomial, na.action = na.omit)
+}
+
+summary(main_mod)
+mv_obs_summary <- model_summary_table(main_mod)
+
+# rr_obs
+if (n_hospitals>1) {
+model_form_step <- any_paralytic_48 ~ factor(hospital_id) + rr_diff_max_scale 
+main_mod <- glm(model_form_step, data = rose_analytic_df, family=binomial)
+} else {
+model_form_step <- any_paralytic_48 ~ rr_diff_max_scale 
+main_mod <- glm(model_form_step, data = rose_analytic_df, family=binomial, na.action = na.omit)
+}
+
+summary(main_mod)
+rr_diff_summary <- model_summary_table(main_mod)
+
+
+# rass/agitation
+if (n_hospitals>1) {
+model_form_step <- any_paralytic_48 ~ factor(hospital_id) + max_rass 
+main_mod <- glm(model_form_step, data = rose_analytic_df, family=binomial)
+} else {
+model_form_step <- any_paralytic_48 ~ max_rass 
+main_mod <- glm(model_form_step, data = rose_analytic_df, family=binomial, na.action = na.omit)
+}
+
+summary(main_mod)
+rass_max_summary <- model_summary_table(main_mod)
+
+
+# rass/deep sedation
+if (n_hospitals>1) {
+model_form_step <- any_paralytic_48 ~ factor(hospital_id) + min_rass12 
+main_mod <- glm(model_form_step, data = rose_analytic_df, family=binomial)
+} else {
+model_form_step <- any_paralytic_48 ~ min_rass12 
+main_mod <- glm(model_form_step, data = rose_analytic_df, family=binomial, na.action = na.omit)
+}
+
+summary(main_mod)
+rass_min_summary <- model_summary_table(main_mod)
+
+# mv_obs_imputed
+if (n_hospitals>1) {
+model_form_step <- any_paralytic_48 ~ factor(hospital_id) + mv_obs_max_scale_impute
+main_mod <- glm(model_form_step, data = rose_analytic_df, family=binomial)
+} else {
+model_form_step <- any_paralytic_48 ~ mv_obs_max_scale_impute 
+main_mod <- glm(model_form_step, data = rose_analytic_df, family=binomial, na.action = na.omit)
+}
+
+summary(main_mod)
+mv_obs_max_scale_impute <- model_summary_table(main_mod)
+
+# rr_obs_imputed
+if (n_hospitals>1) {
+model_form_step <- any_paralytic_48 ~ factor(hospital_id) + rr_diff_max_scale_impute 
+main_mod <- glm(model_form_step, data = rose_analytic_df, family=binomial)
+} else {
+model_form_step <- any_paralytic_48 ~ rr_diff_max_scale_impute 
+main_mod <- glm(model_form_step, data = rose_analytic_df, family=binomial, na.action = na.omit)
+}
+
+summary(main_mod)
+rr_diff_impute_summary <- model_summary_table(main_mod)
+
+#Summary Table With All Models
+main_table <- bind_rows(
+  data.frame(site = c("Prone")),
+  prone_summary,
+  data.frame(site = c("Study period")),
+  period_summary,
+  data.frame(site = c("Prone*Study period")),
+  prone_period_summary,
+  data.frame(site = c("Hypoxemia")),
+  hypoxemia_summary,
+  data.frame(site = c("MV")),
+  mv_obs_summary,
+  data.frame(site = c("RR")),
+  rr_diff_summary,
+  data.frame(site = c("MV_impute")),
+  mv_obs_max_scale_impute,
+  data.frame(site = c("RR_impute")),
+  rr_diff_impute_summary,
+  data.frame(site = c("Rass agitation/Max")),
+  rass_max_summary,
+  data.frame(site = c("Rass deep sedation/Min")),
+  rass_min_summary
+)
+# Write the table to a CSV file
+write.csv(main_table, paste0(project_location, '/project_output_UPLOAD/', site, '_univariate_models.csv'))
+
+```
+
+
+
+
+
+```{r}
+#Univariate models for primary outcome, among patients who ARE NOT PRONED
+# study period
+if (n_hospitals>1) {
+model_form_step <- any_paralytic_48 ~ factor(hospital_id) + (study_period)
+main_mod <- glm(model_form_step, data = unproned_cohort, family=binomial)
+} else {
+model_form_step <- any_paralytic_48 ~ factor(study_period)
+main_mod <- glm(model_form_step, data = unproned_cohort, family=binomial, na.action = na.omit)
+}
+
+summary(main_mod)
+period_summary_unproned <- model_summary_table(main_mod)
+
+# hypoxemia
+if (n_hospitals>1) {
+model_form_step <- any_paralytic_48 ~ factor(hospital_id) + first_rose_pf_all_scale 
+main_mod <- glm(model_form_step, data = unproned_cohort, family=binomial)
+} else {
+model_form_step <- any_paralytic_48 ~ first_rose_pf_all_scale 
+main_mod <- glm(model_form_step, data = unproned_cohort, family=binomial, na.action = na.omit)
+}
+
+summary(main_mod)
+hypoxemia_summary_unproned <- model_summary_table(main_mod)
+
+# mv_obs
+if (n_hospitals>1) {
+model_form_step <- any_paralytic_48 ~ factor(hospital_id) + mv_obs_max_scale 
+main_mod <- glm(model_form_step, data = unproned_cohort, family=binomial)
+} else {
+model_form_step <- any_paralytic_48 ~ mv_obs_max_scale 
+main_mod <- glm(model_form_step, data = unproned_cohort, family=binomial, na.action = na.omit)
+}
+
+summary(main_mod)
+mv_obs_summary_unproned <- model_summary_table(main_mod)
+
+# rr_obs
+if (n_hospitals>1) {
+model_form_step <- any_paralytic_48 ~ factor(hospital_id) + rr_diff_max_scale 
+main_mod <- glm(model_form_step, data = unproned_cohort, family=binomial)
+} else {
+model_form_step <- any_paralytic_48 ~ rr_diff_max_scale 
+main_mod <- glm(model_form_step, data = unproned_cohort, family=binomial, na.action = na.omit)
+}
+
+summary(main_mod)
+rr_diff_summary_unproned <- model_summary_table(main_mod)
+
+
+# rass/agitation
+if (n_hospitals>1) {
+model_form_step <- any_paralytic_48 ~ factor(hospital_id) + max_rass 
+main_mod <- glm(model_form_step, data = unproned_cohort, family=binomial)
+} else {
+model_form_step <- any_paralytic_48 ~ max_rass 
+main_mod <- glm(model_form_step, data = unproned_cohort, family=binomial, na.action = na.omit)
+}
+
+summary(main_mod)
+rass_max_summary_unproned <- model_summary_table(main_mod)
+
+
+# rass/deep sedation
+if (n_hospitals>1) {
+model_form_step <- any_paralytic_48 ~ factor(hospital_id) + min_rass 
+main_mod <- glm(model_form_step, data = unproned_cohort, family=binomial)
+} else {
+model_form_step <- any_paralytic_48 ~ min_rass 
+main_mod <- glm(model_form_step, data = unproned_cohort, family=binomial, na.action = na.omit)
+}
+
+summary(main_mod)
+rass_min_summary_unproned <- model_summary_table(main_mod)
+
+# mv_obs_imputed
+if (n_hospitals>1) {
+model_form_step <- any_paralytic_48 ~ factor(hospital_id) + mv_obs_max_scale_impute
+main_mod <- glm(model_form_step, data = unproned_cohort, family=binomial)
+} else {
+model_form_step <- any_paralytic_48 ~ mv_obs_max_scale_impute 
+main_mod <- glm(model_form_step, data = unproned_cohort, family=binomial, na.action = na.omit)
+}
+
+summary(main_mod)
+mv_obs_max_scale_impute <- model_summary_table(main_mod)
+
+# rr_obs_imputed
+if (n_hospitals>1) {
+model_form_step <- any_paralytic_48 ~ factor(hospital_id) + rr_diff_max_scale_impute 
+main_mod <- glm(model_form_step, data = unproned_cohort, family=binomial)
+} else {
+model_form_step <- any_paralytic_48 ~ rr_diff_max_scale_impute 
+main_mod <- glm(model_form_step, data = unproned_cohort, family=binomial, na.action = na.omit)
+}
+
+summary(main_mod)
+rr_diff_impute_summary <- model_summary_table(main_mod)
+
+
+main_table <- bind_rows(
+  data.frame(site = c("Prone")),
+  prone_summary,
+  data.frame(site = c("Study period")),
+  period_summary,
+  data.frame(site = c("Prone*Study period")),
+  prone_period_summary,
+  data.frame(site = c("Hypoxemia")),
+  hypoxemia_summary,
+  data.frame(site = c("MV")),
+  mv_obs_summary,
+  data.frame(site = c("RR")),
+  rr_diff_summary,
+  data.frame(site = c("MV_impute")),
+  mv_obs_max_scale_impute,
+  data.frame(site = c("RR_impute")),
+  rr_diff_impute_summary,
+  data.frame(site = c("Rass agitation/Max")),
+  rass_max_summary,
+  data.frame(site = c("Rass deep sedation/Min")),
+  rass_min_summary
+)
+
+# Write the table to a CSV file
+write.csv(main_table, paste0(project_location, '/project_output_UPLOAD/', site, '_univariate_models_unproned.csv'))
+```
+
+
+
+```{r}
+#Univariate comparisons between paralytic and non-paralytic groups for key predictors
+
+prone_table <- as.data.frame.matrix(table(rose_analytic_df$prone_48, rose_analytic_df$any_paralytic_48))
+hypoxemia_table<- as.data.frame.matrix(table(rose_analytic_df$hypoxemia, rose_analytic_df$any_paralytic_48))
+dys_table<- as.data.frame.matrix(table(rose_analytic_df$either_dys, rose_analytic_df$any_paralytic_48))
+dys_impute_table<- as.data.frame.matrix(table(rose_analytic_df$either_dys_impute, rose_analytic_df$any_paralytic_48))
+study_period_table <- as.data.frame.matrix(table(rose_analytic_df$study_period, rose_analytic_df$any_paralytic_48))
+intersection_table <- as.data.frame.matrix(table(rose_analytic_df$hypoxemia_dys, rose_analytic_df$any_paralytic_48))
+
+hypoxemia_table_unproned_cohort<- as.data.frame.matrix(table(unproned_cohort$hypoxemia, unproned_cohort$any_paralytic_48))
+dys_table_unproned_cohort<- as.data.frame.matrix(table(unproned_cohort$either_dys, unproned_cohort$any_paralytic_48))
+dys_impute_table_unproned_cohort<- as.data.frame.matrix(table(unproned_cohort$either_dys_impute, unproned_cohort$any_paralytic_48))
+study_period_table_unproned_cohort <- as.data.frame.matrix(table(unproned_cohort$study_period, unproned_cohort$any_paralytic_48))
+intersection_table_unproned_cohort <- as.data.frame.matrix(table(unproned_cohort$hypoxemia_dys, unproned_cohort$any_paralytic_48))
+
+main_table <- bind_rows(
+  data.frame(site = c("Prone")),
+  prone_table,
+  data.frame(site = c("Hypoxemia")),
+  hypoxemia_table,
+  data.frame(site = c("Dyssynchrony")),
+  dys_table,
+  data.frame(site = c("Dyssynchrony_imputed")),
+  dys_impute_table,
+  data.frame(site = c("study period")),
+  study_period_table,
+  data.frame(site = c("Hypoxemia/Dyssynchrony")),
+  intersection_table,
+  data.frame(site = c("Hypoxemia_unproned_cohort")),
+  hypoxemia_table_unproned_cohort,
+  data.frame(site = c("Dyssynchrony_unproned_cohort")),
+  dys_table_unproned_cohort,
+  data.frame(site = c("Dyssynchrony_imputed_unproned_cohort")),
+  dys_impute_table_unproned_cohort,
+  data.frame(site = c("study period_unproned_cohort")),
+  study_period_table_unproned_cohort,
+  data.frame(site = c("Hypoxemia/Dyssynchrony_unproned_cohort")),
+  intersection_table_unproned_cohort)
+
+main_table <- main_table %>% rename("no_paralytics"= "0", "paralytics" = "1")
+main_table$paralytic_percent <- main_table$paralytics / (main_table$no_paralytics+ main_table$paralytics)
+
+
+# Write the table to a CSV file
+write.csv(main_table, paste0(project_location, '/project_output_UPLOAD/', site, '_univariate_intersectionality.csv'))
+
+```
+
+
+
+```{r}
 #Main Model: first look at primary outcome, identifying predictors of paralytics within 48 hours, including estimated compliance and plateau pressure 
 if (n_hospitals>1) {
 model_form_step <- any_paralytic_48 ~ factor(hospital_id) + study_period + bmi_scale + age_scale + sofa_score_scale + race_ethnicity + or_before_enrollment + first_rose_fio2_scale + first_rose_peep_scale + first_rose_mode + criteria + first_rose_pf_all_scale + nee_pressor_dose + ett_to_enrolled + female  + enrollment_location_type  + deep_rass + rr_diff_max_scale + covid_positive + tv_cc_kg_scale  + mv_obs_max_scale  + plat_max_scale + compliance_scale
@@ -972,6 +1874,22 @@ main_mod <- glm(model_form_step,
 
 summary(main_mod)
 main_mod_summary <- model_summary_table(main_mod)
+
+# Add in proning
+if (n_hospitals>1) {
+model_form_step <- any_paralytic_48 ~ factor(hospital_id) + study_period + bmi_scale + age_scale + sofa_score_scale + race_ethnicity + or_before_enrollment + first_rose_fio2_scale + first_rose_peep_scale + first_rose_mode + criteria + first_rose_pf_all_scale + nee_pressor_dose + ett_to_enrolled + female  + enrollment_location_type  + deep_rass + rr_diff_max_scale + covid_positive + tv_cc_kg_scale  + mv_obs_max_scale  + plat_max_scale + compliance_scale + prone_48
+main_mod <- glm(model_form_step,
+          data = rose_analytic_df, 
+          family=binomial)
+} else {
+model_form_step <- any_paralytic_48 ~ study_period + bmi_scale + age_scale + sofa_score_scale + race_ethnicity + or_before_enrollment + first_rose_fio2_scale + first_rose_peep_scale + first_rose_mode + criteria + first_rose_pf_all_scale + nee_pressor_dose + ett_to_enrolled + female  + enrollment_location_type  + deep_rass + rr_diff_max_scale + covid_positive + tv_cc_kg_scale  + mv_obs_max_scale  + plat_max_scale + compliance_scale + prone_48
+main_mod <- glm(model_form_step,
+          data = rose_analytic_df, 
+          family=binomial, na.action = na.omit)
+}
+
+summary(main_mod)
+main_mod_proning_summary <- model_summary_table(main_mod)
 
 #Next look at SA; 
 #Model SA1: look at paralytics within first IMV episode (not just 48h), including compliance and plateau pressure 
@@ -1059,6 +1977,8 @@ main_mod_summary_sa5 <- model_summary_table(main_mod_ett)
 main_table <- bind_rows(
   data.frame(site = c("Main model")),
   main_mod_summary,
+  data.frame(site = c("Main model_proning")),
+  main_mod_proning_summary,
   data.frame(site = c("SA1: all paralytics during first IMV")),
   main_mod_summary_sa1,
   data.frame(site = c("SA2: only observed plateau pressure and compliance")),
@@ -1071,18 +1991,75 @@ main_table <- bind_rows(
   main_mod_summary_sa5
 )
 # Write the table to a CSV file
-write.csv(main_table, paste0(project_location, '/project_output/', site, '_adjusted_models.csv'))
+write.csv(main_table, paste0(project_location, '/project_output_UPLOAD/', site, '_adjusted_models.csv'))
 
-#Output a Table of Average Marginal Effects Using the AME Function Created Above
-#model_list <- list(main_mod, main_mod_plat, main_mod_cov2, main_mod_plat_cov2)
-#main_ame <- ame_summary(model_list)
-#write.csv(main_ame, paste0(project_location, '/project_output/', site, '_adjusted_ame.csv'))
 ```
 
-```{r Descriptive data for paralytic use in past 3 years, post-COVID patients who meet ROSE criteria}
 
-current_rose <- rose_analytic_df |>
-  filter(t_rose_first>=as.POSIXct("2022-01-01", tz=site_time_zone))
+
+```{r TTE, mortality outcome}
+
+#Mortality - add landmark analysis to address immortal time bias
+if (n_hospitals>1) {
+model_form_step <- death_or_hospice ~ factor(hospital_id) + any_paralytic_48
+  main_mod <- glm(model_form_step, data = rose_analytic_df, family=binomial)
+} else {
+model_form_step <- death_or_hospice ~ factor(any_paralytic_48)
+main_mod <- glm(model_form_step, data = rose_analytic_df, family=binomial, na.action = na.omit)
+}
+
+summary(main_mod)
+mortality_univariate <- model_summary_table(main_mod)
+
+#multivariate
+if (n_hospitals>1) {
+model_form_step <- death_or_hospice ~ factor(hospital_id) + any_paralytic_48  + age_scale + sofa_score_scale + or_before_enrollment + first_rose_pf_all_scale + nee_pressor_dose + covid_positive +prone_48
+  main_mod <- glm(model_form_step, data = rose_analytic_df, family=binomial)
+} else {
+model_form_step <- death_or_hospice ~ factor(any_paralytic_48) + age_scale + sofa_score_scale + or_before_enrollment + first_rose_pf_all_scale + nee_pressor_dose + covid_positive +prone_48
+main_mod <- glm(model_form_step, data = rose_analytic_df, family=binomial, na.action = na.omit)
+}
+
+summary(main_mod)
+mortality_multivariate <- model_summary_table(main_mod)
+
+
+#landmark analysis - subset of patients alive/in cohort at 48h
+rose_analytic_df<- rose_analytic_df %>% mutate(incohort_48h= fifelse(final_discharge_dttm> t_rose_first + dhours(48), 1, 0))
+landmark <- rose_analytic_df %>% filter(incohort_48h==1)
+
+if (n_hospitals>1) {
+model_form_step <- death_or_hospice ~ factor(hospital_id) + any_paralytic_48
+  main_mod <- glm(model_form_step, data = landmark, family=binomial)
+} else {
+model_form_step <- death_or_hospice ~ factor(any_paralytic_48)
+main_mod <- glm(model_form_step, data = landmark, family=binomial, na.action = na.omit)
+}
+
+summary(main_mod)
+mortality_univariate_la <- model_summary_table(main_mod)
+
+#adjust 
+if (n_hospitals>1) {
+model_form_step <- death_or_hospice ~ factor(hospital_id) + any_paralytic_48  + age_scale + sofa_score_scale + or_before_enrollment + first_rose_pf_all_scale + nee_pressor_dose + covid_positive +prone_48
+  main_mod <- glm(model_form_step, data = landmark, family=binomial)
+} else {
+model_form_step <- death_or_hospice ~ factor(any_paralytic_48) + age_scale + sofa_score_scale + or_before_enrollment + first_rose_pf_all_scale + nee_pressor_dose + covid_positive +prone_48
+main_mod <- glm(model_form_step, data = landmark, family=binomial, na.action = na.omit)
+}
+
+summary(main_mod)
+mortality_multivariate_la <- model_summary_table(main_mod)
+
+```
+
+
+
+
+```{r Descriptive data for paralytic use continuous/not among patients who meet ROSE criteria}
+
+current_rose <- rose_analytic_df #|>
+#  filter(t_rose_first>=as.POSIXct("2022-03-01", tz=site_time_zone))
 
 #Look at use of continuous vs intermittent pushes, and how many intermittent pushes
 total_possible<- nrow(current_rose)
@@ -1101,7 +2078,6 @@ to_tab <- c(
   'any_proning',
   'ratio_at_paralytics_c_all', 
   'age_at_admission',
-  'race_ethnicity',
   'bmi',
   'hospital_id',
   'sars_cov2_positive',
@@ -1116,7 +2092,6 @@ to_tab <- c(
 factors_tab <- c(
   'continous_paralytic_given',
   'any_proning', 
-  'race_ethnicity',
   'hospital_id',
   'sars_cov2_positive',
   'nee_pressor_dose',
@@ -1132,7 +2107,7 @@ tab2_excel <- as.data.frame(print(tab2_continuous, printToggle = FALSE, missing 
   relocate(site, .before = Overall) |>
   rownames_to_column('characteristic') |>
   rename(percent_missing = Missing)
-write.csv(tab2_excel, file=paste0(project_location, '/project_output/', site, '_Table_paralytics_continuous_current_rose.csv'))
+write.csv(tab2_excel, file=paste0(project_location, '/project_output_UPLOAD/', site, '_Table_paralytics_continuous_rose.csv'))
 rm(tab2_excel)
 
 #intermittent
@@ -1150,7 +2125,6 @@ to_tab <- c(
   'intermittent_para_all', 
   'ratio_at_paralytics_i_all', 
   'age_at_admission',
-  'race_ethnicity',
   'bmi',
   'hospital_id',
   'sars_cov2_positive',
@@ -1165,7 +2139,6 @@ to_tab <- c(
 factors_tab <- c(
   'intermittent_paralytic_given',
   'any_proning', 
-  'race_ethnicity',
   'hospital_id',
   'sars_cov2_positive',
   'nee_pressor_dose',
@@ -1180,7 +2153,7 @@ tab2_excel <- as.data.frame(print(tab2_intermittent, printToggle = FALSE, missin
   relocate(site, .before = Overall) |>
   rownames_to_column('characteristic') |>
   rename(percent_missing = Missing)
-write.csv(tab2_excel, file=paste0(project_location, '/project_output/', site, '_Table_paralytics_intermittent_current_rose.csv'))
+write.csv(tab2_excel, file=paste0(project_location, '/project_output_UPLOAD/', site, '_Table_paralytics_intermittent_rose.csv'))
 rm(tab2_excel)
 
 ```
@@ -1205,7 +2178,6 @@ to_tab <- c(
   'any_proning',
   'ratio_at_paralytics_c_all', 
   'age_at_admission',
-  'race_ethnicity',
   'bmi',
   'hospital_id',
   'sars_cov2_positive',
@@ -1220,7 +2192,6 @@ to_tab <- c(
 factors_tab <- c(
   'continous_paralytic_given',
   'any_proning', 
-  'race_ethnicity',
   'hospital_id',
   'sars_cov2_positive',
   'nee_pressor_dose',
@@ -1235,7 +2206,7 @@ tab2_excel <- as.data.frame(print(tab2_continuous, printToggle = FALSE, missing 
   relocate(site, .before = Overall) |>
   rownames_to_column('characteristic') |>
   rename(percent_missing = Missing)
-write.csv(tab2_excel, file=paste0(project_location, '/project_output/', site, '_Table_paralytics_continuous_current_all.csv'))
+write.csv(tab2_excel, file=paste0(project_location, '/project_output_UPLOAD/', site, '_Table_paralytics_continuous_current_all.csv'))
 rm(tab2_excel)
 
 #intermittent
@@ -1253,7 +2224,6 @@ to_tab <- c(
   'intermittent_para_all', 
   'ratio_at_paralytics_i_all', 
   'age_at_admission',
-  'race_ethnicity',
   'bmi',
   'hospital_id',
   'sars_cov2_positive',
@@ -1268,7 +2238,6 @@ to_tab <- c(
 factors_tab <- c(
   'intermittent_paralytic_given',
   'any_proning', 
-  'race_ethnicity',
   'hospital_id',
   'sars_cov2_positive',
   'nee_pressor_dose',
@@ -1283,7 +2252,7 @@ tab2_excel <- as.data.frame(print(tab2_intermittent, printToggle = FALSE, missin
   relocate(site, .before = Overall) |>
   rownames_to_column('characteristic') |>
   rename(percent_missing = Missing)
-write.csv(tab2_excel, file=paste0(project_location, '/project_output/', site, '_Table_paralytics_intermittent_current_all.csv'))
+write.csv(tab2_excel, file=paste0(project_location, '/project_output_UPLOAD/', site, '_Table_paralytics_intermittent_current_all.csv'))
 rm(tab2_excel)
 
 ```

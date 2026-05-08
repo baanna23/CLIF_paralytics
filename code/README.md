@@ -4,6 +4,8 @@ This directory contains scripts for the CLIF_paralytics project workflow. The ge
 
 ### General Workflow
 
+*** NOTE: There is no config file for the analysis at this time. You must input your project and file location directly into the 00 and 01 scripts. 
+
 1. Run the cohort_identification script (00)
    This script will:
    - Apply inclusion and exclusion criteria
@@ -19,6 +21,6 @@ This directory contains scripts for the CLIF_paralytics project workflow. The ge
 
    Input: cleaned_cohort_data from 00 file Step 1 above. 
 
-   Output: Tables and figures, collected in project_output folder as individual files (Tables) and in graphs folder (figure)
+   Output: Tables and figures, collected in project_output_UPLOAD folder as individual files (Tables) and in graphs folder (figure)
 
 

@@ -23,12 +23,13 @@ The following tables are required:
 6. **medication_admin_intermittent**: `hospitalization_id`, `admin_dttm`, `med_name`, `med_category`, `med_dose`, `med_dose_unit`
    - `med_category` = "cisatracurium", "vecuronium", "rocuronium", "succinylcholine"
 7. **respiratory_support**: `hospitalization_id`, `recorded_dttm`, `device_category`, `mode_category`, `tracheostomy`, `fio2_set`, `lpm_set`, `resp_rate_set`, `peep_set`, `resp_rate_obs`, 'peak_inspiratory_pressure_obs', 'minute_vent_obs', 'plateau_pressure_obs'
+8. **position**: `hospitalization_id`, `recorded_dttm`, `position_category`
 
 ## Cohort identification
 Patients on invasive mechanical ventilation, with primary outcome cohort restricted to patients who meet criteria based on ROSE RCT inclusion and exclusion criteria: No chronic mechanical ventilation (trach within 24h of intubation), PEEP >=8, P/F (or equivalent S/F x2) <=150. Excludes patients who transfer from hospital outside of health system while already receiving IMV. 
 
 ## Expected Results
-18 csv files and 9 pdf figures, saves in project_output folder (in path input by site PI at beginning of 01 file)
+30 csv files and 4 pdf figures, saves in project_output_UPLOAD folder (in path input by site PI at beginning of 01 file)
 
 ## Detailed Instructions for running the project
 
