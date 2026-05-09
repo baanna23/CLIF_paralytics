@@ -127,6 +127,7 @@ rose_analytic_df <- general_analytic_df |>
   pfround = round(first_rose_pf_all),
   deep_rass = case_when(min_rass12< -3~1, min_rass12>-4~0),
   ph_bad_cat = case_when(is.na(min_ph) | min_ph >=7.2 ~0, min_ph <7.2~1), 
+  min_ph = round(min_ph, digits=2),
   dys_ph = case_when(min_ph <=7.4 ~0, min_ph >7.4~1), 
   dys_rr = case_when(rr_diff_max <15 ~0, rr_diff_max >= 15~1), 
   dys_mv = case_when(mv_obs_max <15 ~0, mv_obs_max >= 15~1), 
