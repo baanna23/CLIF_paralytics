@@ -171,6 +171,19 @@ for (i in seq_along(required_filenames)) {
   # Assign the tibble to a variable with the name of the file
   assign(object_name, data_list[[i]])
 }
+
+# Normalize ID columns to arrow::string() to avoid join type errors
+id_cols <- c("hospitalization_id", "patient_id")
+for (tbl in required_files) {
+  x <- get(tbl)
+  if (inherits(x, "ArrowObject")) {
+    cols_to_cast <- intersect(id_cols, names(x))
+    for (col in cols_to_cast) {
+      x <- x |> mutate(!!col := cast(!!sym(col), arrow::string()))
+    }
+    assign(tbl, x)
+  }
+}
 ```
 
 #Now Ready to Identify Cohort
@@ -1135,7 +1148,7 @@ paralytics_episodes_c <- paralytics_episodes_all_c |>
   filter(recorded_dttm>=as.POSIXct(vent_episode_start, tz="UTC") & recorded_dttm<=as.POSIXct(vent_episode_end, tz="UTC"))  #filters to 1st episode of IMV
 
 paralytics_episodes_c <- paralytics_episodes_all_c |>
-  select(-med_order_id)
+  select(-any_of("med_order_id"))
 
 paralytics_episodes_c<- unique(paralytics_episodes_c)
   
@@ -1174,7 +1187,7 @@ paralytics_episodes_i <- paralytics_episodes_all_i |>
   filter(recorded_dttm>=as.POSIXct(vent_episode_start, tz="UTC") & recorded_dttm<=as.POSIXct(vent_episode_end, tz="UTC"))  #filters to 1st episode of IMV
 
 paralytics_episodes_i <- paralytics_episodes_all_i |>
-  select(-med_order_id, -med_frequency)
+  select(-any_of(c("med_order_id", "med_frequency")))
 
 paralytics_episodes_i<- unique(paralytics_episodes_i)
   
