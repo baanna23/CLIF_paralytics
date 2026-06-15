@@ -659,7 +659,7 @@ clif_labs <- clif_labs |>
   mutate(hospitalization_id=as.character(hospitalization_id)) |>
   left_join(cohort_ids) |> #NOTE: clif_labs will now include patient_id and encounter_block
   filter(in_cohort==1) |>
-  select(-in_cohort, -lab_name) |>
+  select(-any_of(c('in_cohort', 'lab_name'))) |>
   compute()
 
 clif_labs<- unique(clif_labs)
@@ -738,7 +738,7 @@ clif_vitals <- clif_vitals |>
 pao2_i <- clif_vitals |>
   filter(vital_category=='spo2' & !is.na(vital_value)) |>
   filter(vital_value!='NULL') |>
-  filter(vital_value>60 & vital_value<=100) |> #Lower Bound Filtering for SpO2 Outliers > 60 and <=100 
+  filter(vital_value>79 & vital_value<=100) |> #Lower Bound Filtering for SpO2 80-100 
   distinct() |>
   select(patient_id, encounter_block, recorded_dttm, vital_value) |>
   collect() |>
@@ -749,8 +749,8 @@ vent_data <- vent_data |>
   #Bring in spo2 and pao2_i Here and Then Fill Again
   join(pao2_i, how ='full') |>
   filter(recorded_dttm>=as.POSIXct(vent_episode_start, tz="UTC") & recorded_dttm<=as.POSIXct(vent_episode_end, tz="UTC")) |>
-  arrange(patient_id, encounter_block, recorded_dttm) |>  
-  mutate(pao2_i= case_when(spo2== 96~82, spo2==95~76, spo2==94~71, spo2==93~67, spo2==92~64, spo2==91~61, spo2==90~59, spo2==89~57, spo2==88~55, spo2==87~53, spo2==86~51, spo2==85~50, spo2==84~49, spo2==83~47, spo2==82~46, spo2==81~45, spo2==80~44, spo2==79~43, spo2==78| spo2==77~42, spo2==76~41, spo2==75~40, spo2==74|spo2==73~39, spo2==72~38, spo2==71|spo2==70~37)) |>
+  arrange(patient_id, encounter_block, recorded_dttm) |>  #spo2 conversion only between 80-96 per rose protocol
+  mutate(pao2_i= case_when(spo2== 96~82, spo2==95~76, spo2==94~71, spo2==93~67, spo2==92~64, spo2==91~61, spo2==90~59, spo2==89~57, spo2==88~55, spo2==87~53, spo2==86~51, spo2==85~50, spo2==84~49, spo2==83~47, spo2==82~46, spo2==81~45, spo2==80~44)) |>
   ungroup() 
 
 #Quality Check FiO2 and PEEP Data
@@ -804,324 +804,169 @@ pf_table
 rm(pf_table, pao2, pao2_i)
 ```
 
-
 ```{r Implement ROSE Inclusion Criteria}
-rose_criteria <- vent_data |>
-  filter(!is.na(pf_ratio) | !(is.na(sf_ratio))) |>
-  #Filter to First 126 Hours After Vent Start (120 hr for MV then 6hr for confirmatory S/F). P/F and S/F measured after first 1/2 hour, to limit documentation from pre-intubation that is hold over
-  filter((recorded_dttm>=as.POSIXct(vent_episode_start, tz="UTC")+dhours(.5))  & (recorded_dttm<=as.POSIXct(vent_episode_start, tz="UTC")+dhours(126))) |>
-  mutate(temp_rose_time=fifelse(
-    rose_eligible==1 & recorded_dttm<=as.POSIXct(vent_episode_start, tz="UTC")+dhours(120), 1, 0
-  )) |>
-  group_by(patient_id, encounter_block, temp_rose_time, rose_eligible) |> #By grouping together can define the 1st PF ratios that Meet ROSE criteria
-  arrange(patient_id, encounter_block, recorded_dttm) |>
-  mutate(temp_pf=row_number()) |>
-  ungroup() |>
-  #Identify the PF ratio, FIo2, PEEP, and Mode Where ROSE Criteria First met
-  mutate(first_rose_pf=fcase(
-    temp_pf==1 & rose_eligible==1 & temp_rose_time==1, pf_ratio
-  )) |>
-  mutate(first_rose_sf=fcase(
-    temp_pf==1 & rose_eligible==1 & temp_rose_time==1, sf_ratio
-  )) |>
-  mutate(first_rose_fio2=fcase(
-    temp_pf==1 & rose_eligible==1 & temp_rose_time==1, fio2_set
-  )) |>
-  mutate(first_rose_peep=fcase(
-    temp_pf==1 & rose_eligible==1 & temp_rose_time==1, peep_set
-  )) |>
-  mutate(first_rose_mode=fcase(
-    temp_pf==1 & rose_eligible==1 & temp_rose_time==1, mode_category
-  )) |>
-  mutate(t_rose_first=fcase(
-    temp_pf==1 & rose_eligible==1 & temp_rose_time==1, recorded_dttm
-  )) |>
-  mutate(criteria=fifelse(t_rose_first==recorded_dttm & rose_eligible_pf==1, "pf", NA)) |>
-  group_by(patient_id, encounter_block) |>
-  fill(first_rose_pf,
-       first_rose_sf, 
-       first_rose_fio2,
-       first_rose_peep,
-       first_rose_mode,
-       t_rose_first,
-       criteria,
-       .direction = 'updown') |>
-  ungroup() |>
-  collect()
+# ── Helper: columns to capture at a qualifying row ──────────────────────────
+qual_vars <- c("pf_ratio", "sf_ratio", "fio2_set", "peep_set", 
+               "mode_category", "recorded_dttm")
 
-  #Now for patients qualifying with S/F Repeat For The 2nd Eligible Time - Must be within 1-6 Hours t_rose_first if s/f is what qualifies you
-  #This Table is Already Windowed to First 126 Hours of Vent and Ends When patient is extubated/dies/transfers (if before 126 hours)
-  rose_criteria_sf <- rose_criteria |>
-  filter(is.na(first_rose_pf)) |> #potentially eligible based on s/f
+# ── Step 1: Window & tag eligible rows ──────────────────────────────────────
+rose_windowed <- vent_data |>
+  filter(!is.na(pf_ratio) | !is.na(sf_ratio)) |>
+  filter(
+    recorded_dttm >= as.POSIXct(vent_episode_start, tz = "UTC"), #collect data starting at ett initiation
+    recorded_dttm <= as.POSIXct(vent_episode_start, tz = "UTC") + dhours(126)
+  ) |>
+  mutate(
+    in_120h_window = recorded_dttm <= 
+                     as.POSIXct(vent_episode_start, tz = "UTC") + dhours(120),
+    past_30min     = recorded_dttm >= 
+                     as.POSIXct(vent_episode_start, tz = "UTC") + dminutes(30)
+  ) |>
+  collect()  # pull from DB once, work in memory from here
 
-  mutate(eligible_rose_t2=fifelse(
-    recorded_dttm>=as.POSIXct(t_rose_first, tz="UTC")+dhours(1) & 
-    recorded_dttm<=as.POSIXct(t_rose_first, tz="UTC")+dhours(6), 1, 0 # since this is set as 0 when not true, fill updown doesn't overwrite it. 
-  )) |>
-  group_by(patient_id, encounter_block, eligible_rose_t2, rose_eligible) |>
-  arrange(patient_id, encounter_block, recorded_dttm) |>
-  mutate(temp_pf=row_number()) |>
-  ungroup() |>
-  mutate(second_rose_pf=fcase(
-    temp_pf==1 & rose_eligible==1 & eligible_rose_t2, pf_ratio
-  )) |>
-  mutate(second_rose_sf=fcase(
-    temp_pf==1 & rose_eligible==1 & eligible_rose_t2, sf_ratio
-  )) |>
-  mutate(second_rose_fio2=fcase(
-    temp_pf==1 & rose_eligible==1 & eligible_rose_t2, fio2_set
-  )) |>
-  mutate(second_rose_peep=fcase(
-    temp_pf==1 & rose_eligible==1 & eligible_rose_t2, peep_set
-  )) |>
-  mutate(second_rose_mode=fcase(
-    temp_pf==1 & rose_eligible==1 & eligible_rose_t2, mode_category
-  )) |>
-  mutate(t_rose_second=fcase(
-    temp_pf==1 & rose_eligible==1 & eligible_rose_t2, recorded_dttm
-  )) |>
-  group_by(patient_id, encounter_block) |>
-  fill(second_rose_pf, 
-       second_rose_sf,
-       second_rose_fio2,
-       second_rose_peep,
-       second_rose_mode,
-       t_rose_second,
-       .direction = 'updown') |>
-  ungroup()
+# ── Step 2: For each patient/encounter, find the earliest qualifying event ──
+#   Rules:
+#     PF qualifies alone if rose_eligible == 1 & rose_eligible_pf == 1 & in_120h_window & past_30min
+#     SF qualifies if rose_eligible == 1 & rose_eligible_sf == 1 & in_120h_window & past_30min
+#       AND there exists another rose_eligible SF row 1–6 hours LATER (also past_30min)
+#        (that second row can be in the 120–126h window)
+#       AND there hasn't been a pf ratio since vent start (look back to time 0, not just 6h)
+#         — specifically: no PF in the 6 hours prior to THAT row
+#         — NOTE: the 6h lookback CAN include rows from the first 30 min of ventilation
+
+find_first_qualifying <- function(df) {
+  df <- df |> arrange(recorded_dttm)
   
-  rose_criteria_tmp<- rose_criteria_sf |>
-    select(hospitalization_id, encounter_block, second_rose_pf, second_rose_sf, second_rose_fio2, second_rose_peep, second_rose_mode, t_rose_second) |> 
-    filter(!is.na(t_rose_second)) |> 
-    mutate(criteria_2="sf")
+  # Candidates must be in the 120h window AND past the first 30 minutes
+  candidates <- which(df$rose_eligible == 1 & df$in_120h_window & df$past_30min)
   
-  rose_criteria_tmp <- unique(rose_criteria_tmp)
-
-  rose_criteria <- rose_criteria |> #now can ID people who meet S/F criteria after 1st s/f to enroll. 
-  join(rose_criteria_tmp, how ='left') |>
-    mutate(criteria=coalesce(criteria_2, criteria))|>
-    select(-criteria_2)
-  rm(rose_criteria_tmp)
-
-  #filter to cohort that had a first qualifying s/f without a second in window, want time after the next s/f or p/f, while still in 126h window after intubation
-  reassess_pf<- rose_criteria_sf |>
-  filter(is.na(t_rose_second) & !is.na(first_rose_sf) & recorded_dttm> t_rose_first & rose_eligible==1) |> 
-  #Filter to First 126 Hours After Vent Start (120 hr for MV then 6hr for confirmatory S/F)
-  filter(recorded_dttm<=as.POSIXct(vent_episode_start, tz="UTC")+dhours(126)) |>
- # mutate(first_rose_fio2=NA, first_rose_mode=NA, first_rose_peep=NA, first_rose_pf=NA, first_rose_sf=NA, t_rose_first=NA) |>
-  mutate(temp_rose_time=fifelse(
-    rose_eligible==1 & recorded_dttm<=as.POSIXct(vent_episode_start, tz="UTC")+dhours(120), 1, 0
-  )) |>
-  group_by(patient_id, encounter_block, temp_rose_time, rose_eligible) |> #By grouping together can define the 1st PF ratios that Meet ROSE criteria, replaces earlier calculation since that s/f didn't have confirmatory low s/f
-  arrange(patient_id, encounter_block, recorded_dttm) |>
-  mutate(temp_pf=row_number()) |>
-  ungroup() |>
-  #Identify the PF ratio, FIo2, PEEP, and Mode Where Proseva Criteria First met
-  mutate(first_rose_pf_2=fcase(
-    temp_pf==1 & rose_eligible==1 & temp_rose_time==1, pf_ratio
-  )) |>
-  mutate(first_rose_sf_2=fcase(
-    temp_pf==1 & rose_eligible==1 & temp_rose_time==1, sf_ratio
-  )) |>
-  mutate(first_rose_fio2_2=fcase(
-    temp_pf==1 & rose_eligible==1 & temp_rose_time==1, fio2_set
-  )) |>
-  mutate(first_rose_peep_2=fcase(
-    temp_pf==1 & rose_eligible==1 & temp_rose_time==1, peep_set
-  )) |>
-  mutate(first_rose_mode_2=fcase(
-    temp_pf==1 & rose_eligible==1 & temp_rose_time==1, mode_category
-  )) |>
-  mutate(t_rose_first_2=fcase(
-    temp_pf==1 & rose_eligible==1 & temp_rose_time==1, recorded_dttm
-  )) |>
-  group_by(patient_id, encounter_block) |>
-  fill(first_rose_pf_2,
-       first_rose_sf_2, 
-       first_rose_fio2_2,
-       first_rose_peep_2,
-       first_rose_mode_2,
-       t_rose_first_2,
-       .direction = 'updown') |>
-  ungroup() |>
-  collect()
-
-  #group of people with p/f that meets criteria (who didn't originally have s/f meet criteria, need to replace their original s/f timing metrics)
-  reassess_pf_quality <- reassess_pf |>
-    filter(!is.na(first_rose_pf_2)) |> 
-    mutate(criteria_2 = "pf") |>
-    select(hospitalization_id, encounter_block, first_rose_pf_2, first_rose_sf_2, first_rose_fio2_2, first_rose_peep_2, first_rose_mode_2, t_rose_first_2, criteria_2) 
+  result <- tibble(
+    t_rose_first     = as.POSIXct(NA, tz = "UTC"),
+    first_rose_pf    = NA_real_,
+    first_rose_sf    = NA_real_,
+    first_rose_fio2  = NA_real_,
+    first_rose_peep  = NA_real_,
+    first_rose_mode  = NA_character_,
+    t_rose_second    = as.POSIXct(NA, tz = "UTC"),
+    second_rose_pf   = NA_real_,
+    second_rose_sf   = NA_real_,
+    second_rose_fio2 = NA_real_,
+    second_rose_peep = NA_real_,
+    second_rose_mode = NA_character_,
+    criteria         = NA_character_
+  )
   
-reassess_pf_quality <- unique(reassess_pf_quality)
-  
-rose_criteria <- rose_criteria |> #replace old s/f if not eligible with new p/f values that works (later time)
-  join(reassess_pf_quality, how ='left') |>
-   mutate(first_rose_fio2=fifelse(!is.na(first_rose_pf_2), first_rose_fio2_2, first_rose_fio2), 
-          first_rose_pf=fifelse(!is.na(first_rose_pf_2), first_rose_pf_2, first_rose_pf), 
-          first_rose_sf=fifelse(!is.na(first_rose_pf_2), NA, first_rose_sf), #if not replacing new pf keep old s/f
-          first_rose_peep=fifelse(!is.na(first_rose_pf_2), first_rose_peep_2, first_rose_peep), 
-          first_rose_mode=fifelse(!is.na(first_rose_pf_2), first_rose_mode_2, first_rose_mode), 
-          t_rose_first=fifelse(!is.na(first_rose_pf_2), t_rose_first_2, t_rose_first), 
-          criteria=coalesce(criteria_2, criteria)) |>
-  select(-first_rose_fio2_2, -first_rose_pf_2, -first_rose_sf_2, -first_rose_peep_2, -first_rose_mode_2, -t_rose_first_2, -criteria_2) |>
-collect()
-
-#check eligibilty based on second s/f in the range. 
-  reassess_sf_quality <- reassess_pf |>
-    filter(is.na(first_rose_pf_2) & !is.na(first_rose_sf_2)) |> 
-    select(hospitalization_id, encounter_block, first_rose_pf_2, first_rose_sf_2, first_rose_fio2_2, first_rose_peep_2, first_rose_mode_2, t_rose_first_2)
-  
-  reassess_sf_quality<- unique(reassess_sf_quality)
+  for (i in candidates) {
+    row_i <- df[i, ]
     
-  rose_criteria <- rose_criteria |> #replace old s/f if not eligible with new s/f that works (later time), but need to assess that before overwrite
-  join(reassess_sf_quality, how ='left') |>
-    collect()
+    # PF qualifies alone
+    if (isTRUE(row_i$rose_eligible_pf == 1)) {
+      result$t_rose_first    <- row_i$recorded_dttm
+      result$first_rose_pf   <- row_i$pf_ratio
+      result$first_rose_sf   <- row_i$sf_ratio
+      result$first_rose_fio2 <- row_i$fio2_set
+      result$first_rose_peep <- row_i$peep_set
+      result$first_rose_mode <- row_i$mode_category
+      result$criteria        <- "pf"
+      return(result)
+    }
     
-  #Now for patients qualifying with S/F Repeat For The 2nd Eligible Time - Must be within 1-6 Hours t_rose_first if s/f is what qualifies you
-  #This Table is Already Windowed to First 126 Hours of Vent and Ends When patient is extubated/dies/transfers (if before 126 hours)
-  rose_criteria_sf2 <- rose_criteria |>
-  filter(!is.na(first_rose_sf_2) & is.na(first_rose_pf)) |> #potentially eligible based on 2nd low s/f (first didn't qualify)
-
-  mutate(eligible_rose_t2_2=fifelse(
-    recorded_dttm>=as.POSIXct(t_rose_first_2, tz="UTC")+dhours(1) & 
-    recorded_dttm<=as.POSIXct(t_rose_first_2, tz="UTC")+dhours(6), 1, 0 # since this is set as 0 when not true, fill updown doesn't overwrite it. 
-  )) |>
-  group_by(patient_id, encounter_block, eligible_rose_t2_2, rose_eligible) |>
-  arrange(patient_id, encounter_block, recorded_dttm) |>
-  mutate(temp_pf=row_number()) |>
-  ungroup() |>
-  mutate(second_rose_pf_2=fcase(
-    temp_pf==1 & rose_eligible==1 & eligible_rose_t2_2, pf_ratio
-  )) |>
-  mutate(second_rose_sf_2=fcase(
-    temp_pf==1 & rose_eligible==1 & eligible_rose_t2_2, sf_ratio
-  )) |>
-  mutate(second_rose_fio2_2=fcase(
-    temp_pf==1 & rose_eligible==1 & eligible_rose_t2_2, fio2_set
-  )) |>
-  mutate(second_rose_peep_2=fcase(
-    temp_pf==1 & rose_eligible==1 & eligible_rose_t2_2, peep_set
-  )) |>
-  mutate(second_rose_mode_2=fcase(
-    temp_pf==1 & rose_eligible==1 & eligible_rose_t2_2, mode_category
-  )) |>
-  mutate(t_rose_second_2=fcase(
-    temp_pf==1 & rose_eligible==1 & eligible_rose_t2_2, recorded_dttm
-  )) |>
-  group_by(patient_id, encounter_block) |>
-  fill(second_rose_pf_2, 
-       second_rose_sf_2,
-       second_rose_fio2_2,
-       second_rose_peep_2,
-       second_rose_mode_2,
-       t_rose_second_2,
-       .direction = 'updown') |>
-  ungroup()
+    # SF needs:
+    #   1. No PF in the 6 hours before this SF (lookback includes first 30 min of vent)
+    #   2. Confirmatory SF 1-6h later (also past_30min, also with no PF in ITS prior 6 hours)
+    if (isTRUE(row_i$rose_eligible_sf == 1)) {
+      t1 <- row_i$recorded_dttm
+      
+      # Check if any PF existed in the 6 hours before this SF
+      # This lookback CAN include rows from the first 30 min of ventilation
+      has_pf_prior_6h <- any(
+        !is.na(df$pf_ratio) &
+        df$recorded_dttm >= (t1 - dhours(6)) &
+        df$recorded_dttm < t1
+      )
+      
+      # Skip this candidate if PF existed in prior 6h
+      if (has_pf_prior_6h) next
+      
+      # Find confirmatory SF 1-6h later that is also past 30min
+      confirm_idx <- which(
+        df$rose_eligible_sf == 1 &
+        df$past_30min &
+        df$recorded_dttm >= t1 + dhours(1) &
+        df$recorded_dttm <= t1 + dhours(6)
+      )
+      
+      # Confirmatory SF must also not have PF in ITS prior 6 hours
+      valid_confirm <- c()
+      for (j in confirm_idx) {
+        t_j <- df$recorded_dttm[j]
+        has_pf_prior_6h_j <- any(
+          !is.na(df$pf_ratio) &
+          df$recorded_dttm >= (t_j - dhours(6)) &
+          df$recorded_dttm < t_j
+        )
+        if (!has_pf_prior_6h_j) {
+          valid_confirm <- c(valid_confirm, j)
+        }
+      }
+      
+      if (length(valid_confirm) > 0) {
+        j <- valid_confirm[1]
+        row_j <- df[j, ]
+        
+        result$t_rose_first     <- t1
+        result$first_rose_pf    <- row_i$pf_ratio
+        result$first_rose_sf    <- row_i$sf_ratio
+        result$first_rose_fio2  <- row_i$fio2_set
+        result$first_rose_peep  <- row_i$peep_set
+        result$first_rose_mode  <- row_i$mode_category
+        result$t_rose_second    <- row_j$recorded_dttm
+        result$second_rose_pf   <- row_j$pf_ratio
+        result$second_rose_sf   <- row_j$sf_ratio
+        result$second_rose_fio2 <- row_j$fio2_set
+        result$second_rose_peep <- row_j$peep_set
+        result$second_rose_mode <- row_j$mode_category
+        result$criteria         <- "sf"
+        return(result)
+      }
+    }
+  }
   
-  rose_criteria_tmp<- rose_criteria_sf2 |>
-    filter(!is.na(t_rose_second_2)) |>
-    mutate(criteria_2="sf") |>
-    select(hospitalization_id, encounter_block, second_rose_pf_2, second_rose_sf_2, second_rose_fio2_2, second_rose_peep_2, second_rose_mode_2, t_rose_second_2, criteria_2) 
-  
-  rose_criteria_tmp<- unique(rose_criteria_tmp)
-  
-  rose_criteria <- rose_criteria |> #now can ID people who meet S/F criteria after 1st s/f to enroll (the 2nd time, 1st didn't have confirmatory level)
-  join(rose_criteria_tmp, how ='left') |>
-   mutate(first_rose_fio2=fifelse(!is.na(t_rose_second_2), first_rose_fio2_2, first_rose_fio2), 
-          first_rose_pf=fifelse(!is.na(t_rose_second_2), first_rose_pf_2, first_rose_pf), 
-          first_rose_sf=fifelse(!is.na(t_rose_second_2), first_rose_sf_2, first_rose_sf), 
-          first_rose_peep=fifelse(!is.na(t_rose_second_2), first_rose_peep_2, first_rose_peep), 
-          first_rose_mode=fifelse(!is.na(t_rose_second_2), first_rose_mode_2, first_rose_mode), 
-          t_rose_first=fifelse(!is.na(t_rose_second_2), t_rose_first_2, t_rose_first),
-          second_rose_fio2=fifelse(!is.na(t_rose_second_2), second_rose_fio2_2, second_rose_fio2), 
-          second_rose_pf=fifelse(!is.na(t_rose_second_2), second_rose_pf_2, second_rose_pf), 
-          second_rose_sf=fifelse(!is.na(t_rose_second_2), second_rose_sf_2, second_rose_sf), #if not replacing new pf keep old s/f
-          second_rose_peep=fifelse(!is.na(t_rose_second_2), second_rose_peep_2, second_rose_peep), 
-          second_rose_mode=fifelse(!is.na(t_rose_second_2), second_rose_mode_2, second_rose_mode), 
-          t_rose_second=fifelse(!is.na(t_rose_second_2), t_rose_second_2, t_rose_second),
-          criteria=coalesce(criteria_2, criteria)
-          ) |>
-  select(-first_rose_fio2_2, -first_rose_pf_2, -first_rose_sf_2, -first_rose_peep_2, -first_rose_mode_2, -t_rose_first_2, -second_rose_fio2_2, -second_rose_pf_2, -second_rose_sf_2, -second_rose_peep_2, -second_rose_mode_2, -t_rose_second_2, -criteria_2) 
-  
-rm(rose_criteria_tmp)
+  return(result)
+}
 
-#among remaining people who may eventually have p/f or s/f eligible, but haven't met criteria yet:    
-possible_eligible <- rose_criteria |>
-  filter(is.na(criteria) & recorded_dttm>t_rose_first & rose_eligible==1)
-possible_eligible <- unique(possible_eligible)
-
-# group that ever has pf criteria met
-possible_eligible_pf <- possible_eligible |>
-  filter(rose_eligible_pf==1)|>
-  group_by(patient_id, encounter_block) |>
-  arrange(patient_id, encounter_block, recorded_dttm) |>
-  summarise(first_pf_qualify= min(recorded_dttm)) 
-
-# group that ever has sf criteria met
-possible_eligible_filtered <- possible_eligible |> #within 6 hours
-  group_by(hospitalization_id) |>
-  filter(map_lgl(row_number(), function(i) {
-    # Calculate diffs from the i-th datetime to all others in the group
-    diffs <- (difftime(recorded_dttm[i], recorded_dttm, units = "hours"))
-    # Check if any other row satisfies 1 <= diff <= 6
-    any(diffs <= -1 & diffs >= -6 & (1:length(diffs)) != i)
-  })) |>
+# ── Step 3: Apply per patient/encounter ─────────────────────────────────────
+rose_criteria_timing <- rose_windowed |>
+  group_by(patient_id, encounter_block, hospitalization_id) |>
+  group_modify(~ {
+    qual <- find_first_qualifying(.x)
+    # Return one summary row per group
+    tibble(
+      t_rose_first       = qual$t_rose_first,
+      first_rose_pf      = qual$first_rose_pf,
+      first_rose_sf      = qual$first_rose_sf,
+      first_rose_fio2    = qual$first_rose_fio2,
+      first_rose_peep    = qual$first_rose_peep,
+      first_rose_mode    = qual$first_rose_mode,
+      t_rose_second      = qual$t_rose_second,
+      second_rose_pf     = qual$second_rose_pf,
+      second_rose_sf     = qual$second_rose_sf,
+      second_rose_fio2   = qual$second_rose_fio2,
+      second_rose_peep   = qual$second_rose_peep,
+      second_rose_mode   = qual$second_rose_mode,
+      criteria           = qual$criteria
+    )
+  }) |>
   ungroup()
 
-possible_eligible_sf <- possible_eligible_filtered |>
-  filter(rose_eligible_sf==1)|>
-  group_by(patient_id, encounter_block) |>
-  arrange(patient_id, encounter_block, recorded_dttm) |>
-  summarise(first_sf_qualify= min(recorded_dttm)) 
+# ── Step 4: join back to rose_windowed  ─
+rose_criteria <- rose_windowed |>
+  left_join(
+    rose_criteria_timing,
+    by = c("patient_id", "encounter_block", "hospitalization_id")
+  )
 
-#earliest time pf or qualifying sf happen
-possible_eligible_either<- possible_eligible_sf |>
-  full_join(possible_eligible_pf, by =c('patient_id', 'encounter_block')) |>
-  mutate(min_criteria_time = pmin(first_sf_qualify, first_pf_qualify, na.rm=T)) |>
-  mutate(criteria_2=case_when(first_pf_qualify==min_criteria_time~ "pf", first_sf_qualify==min_criteria_time~"sf"))
-  
-#determine the mode/peep, etc values when qualify
-possible_eligible <- possible_eligible |>
-  left_join(possible_eligible_either)|> 
- mutate(first_rose_fio2_3=fifelse((recorded_dttm==first_sf_qualify & first_sf_qualify==min_criteria_time) | (recorded_dttm==first_pf_qualify & first_pf_qualify==min_criteria_time), fio2_set, NA), 
-        first_rose_pf_3=fifelse(recorded_dttm==first_pf_qualify & first_pf_qualify==min_criteria_time, pf_ratio, NA), 
-        first_rose_sf_3=fifelse(recorded_dttm==first_sf_qualify & first_sf_qualify==min_criteria_time, sf_ratio, NA),
-        first_rose_peep_3=fifelse((recorded_dttm==first_sf_qualify & first_sf_qualify==min_criteria_time) | (recorded_dttm==first_pf_qualify & first_pf_qualify==min_criteria_time), peep_set, NA), 
-        first_rose_mode_3=fifelse((recorded_dttm==first_sf_qualify & first_sf_qualify==min_criteria_time) | (recorded_dttm==first_pf_qualify & first_pf_qualify==min_criteria_time), mode_category, NA), 
-        t_rose_first_3=fifelse((recorded_dttm==first_sf_qualify & first_sf_qualify==min_criteria_time) | (recorded_dttm==first_pf_qualify & first_pf_qualify==min_criteria_time), recorded_dttm, NA)) |>
-  select(encounter_block, hospitalization_id, first_rose_fio2_3, first_rose_pf_3, first_rose_sf_3, first_rose_peep_3, first_rose_mode_3, t_rose_first_3, criteria_2) |>
-  filter(!is.na(t_rose_first_3))
-  
-possible_eligible<- unique(possible_eligible)
-
-rose_criteria <- rose_criteria |> #now can ID people who meet S/F criteria after 1st s/f to enroll (the 2nd time, 1st didn't have confirmatory level)
-  join(possible_eligible, how ='left') |>
-   mutate(first_rose_fio2=fifelse(!is.na(t_rose_first_3), first_rose_fio2_3, first_rose_fio2), 
-          first_rose_pf=fifelse(!is.na(t_rose_first_3), first_rose_pf_3, first_rose_pf), 
-          first_rose_sf=fifelse(!is.na(t_rose_first_3), first_rose_sf_3, first_rose_sf), 
-          first_rose_peep=fifelse(!is.na(t_rose_first_3), first_rose_peep_3, first_rose_peep), 
-          first_rose_mode=fifelse(!is.na(t_rose_first_3), first_rose_mode_3, first_rose_mode), 
-          t_rose_first=fifelse(!is.na(t_rose_first_3), t_rose_first_3, t_rose_first),
-          criteria= coalesce(criteria_2, criteria),
-          first_rose_fio2=fifelse(!is.na(criteria), first_rose_fio2, NA), 
-          first_rose_pf=fifelse(!is.na(criteria), first_rose_pf, NA), 
-          first_rose_sf=fifelse(!is.na(criteria), first_rose_sf, NA), 
-          first_rose_peep=fifelse(!is.na(criteria), first_rose_peep, NA), 
-          first_rose_mode=fifelse(!is.na(criteria), first_rose_mode, NA), 
-          t_rose_first=fifelse(!is.na(criteria), t_rose_first, NA)
-          ) |>
-          select(-first_rose_fio2_3, -first_rose_pf_3, -first_rose_sf_3, -first_rose_peep_3, -first_rose_mode_3, -t_rose_first_3, -criteria_2) 
-  
-#rm(possible_eligible)
-
-#NOW Define Who is Eligible by ROSE criteria
-rose_criteria_timing <- rose_criteria |>    
-  #Select Wanted Variables and Keep First Row for Each Patient and Encounter Block
-  select(hospitalization_id, patient_id, encounter_block, first_rose_pf:criteria) 
-
-rose_criteria_timing<- unique(rose_criteria_timing)
-
-```
+``` 
 
 
 ```{r Define Potentially Eligible Paralytic Episodes - Those Occurring During First Ventilator Episode}
@@ -1147,14 +992,114 @@ paralytics_episodes_c <- paralytics_episodes_all_c |>
   mutate(recorded_dttm=as.POSIXct(recorded_dttm, tz="UTC")) |>
   filter(recorded_dttm>=as.POSIXct(vent_episode_start, tz="UTC") & recorded_dttm<=as.POSIXct(vent_episode_end, tz="UTC"))  #filters to 1st episode of IMV
 
-paralytics_episodes_c <- paralytics_episodes_all_c |>
+paralytics_episodes_c <- paralytics_episodes_c |>
   select(-any_of("med_order_id"))
 
 paralytics_episodes_c<- unique(paralytics_episodes_c)
+
+# ── Calculate cumulative hours of continuous paralytic infusion PRIOR to criteria ──
+paralytics_prior_duration <- paralytics_episodes_c |>
+  filter(!is.na(t_rose_first)) |>
+  # Only records that START before criteria time
+  filter(recorded_dttm < t_rose_first) |>
+  group_by(patient_id, encounter_block) |>
+  arrange(patient_id, encounter_block, recorded_dttm) |>
+  mutate(
+    # Each row runs until the next row starts, capped at t_rose_first
+    next_start = lead(recorded_dttm),
+    segment_end = pmin(coalesce(next_start, t_rose_first), t_rose_first),
+    # Hours this segment was running
+    segment_hours = as.numeric(difftime(segment_end, recorded_dttm, units = "hours")),
+    # Only count when dose > 0 (dose = 0 means infusion stopped)
+    segment_hours_running = fifelse(med_dose > 0, segment_hours, 0)) |>
+  summarise(total_continuous_para_hours_prior = sum(segment_hours_running, na.rm = TRUE), .groups = "drop")
+
+
+# ── Total hours on continuous paralytics AFTER meeting criteria ──
+paralytics_post_duration <- paralytics_episodes_c |>
+  filter(!is.na(t_rose_first)) |>
+  # Only records AFTER criteria time, within first vent episode
+  filter(recorded_dttm >= t_rose_first) |>
+  group_by(patient_id, encounter_block) |>
+  arrange(patient_id, encounter_block, recorded_dttm) |>
+  mutate(
+    next_start = lead(recorded_dttm),
+    # Segment runs until next row or end of vent episode
+    segment_end = pmin(
+      coalesce(next_start, as.POSIXct(vent_episode_end, tz = "UTC")), 
+      as.POSIXct(vent_episode_end, tz = "UTC")
+    ),
+    segment_hours = as.numeric(difftime(segment_end, recorded_dttm, units = "hours")),
+    # Only count when dose > 0
+    segment_hours_running = fifelse(med_dose > 0, segment_hours, 0)
+  ) |>
+  summarise(
+    total_continuous_para_hours_post = sum(segment_hours_running, na.rm = TRUE),
+    .groups = "drop"
+  )
+
+# ── Total hours on continuous paralytics OVERALL (entire vent episode) ──
+paralytics_total_duration <- paralytics_episodes_c |>
+  filter(!is.na(t_rose_first)) |>
+  group_by(patient_id, encounter_block) |>
+  arrange(patient_id, encounter_block, recorded_dttm) |>
+  mutate(
+    next_start = lead(recorded_dttm),
+    segment_end = pmin(
+      coalesce(next_start, as.POSIXct(vent_episode_end, tz = "UTC")), 
+      as.POSIXct(vent_episode_end, tz = "UTC")
+    ),
+    segment_hours = as.numeric(difftime(segment_end, recorded_dttm, units = "hours")),
+    segment_hours_running = fifelse(med_dose > 0, segment_hours, 0)
+  ) |>
+  summarise(
+    total_continuous_para_hours_all = sum(segment_hours_running, na.rm = TRUE),
+    .groups = "drop"
+  )
+
+# ── Total hours on continuous paralytics in first 48h after criteria ──
+paralytics_48h_duration <- paralytics_episodes_c |>
+  filter(!is.na(t_rose_first)) |>
+  # Only records AFTER criteria time
+  filter(recorded_dttm >= t_rose_first) |>
+  # Cap at 48h after criteria
+  filter(recorded_dttm <= t_rose_first + dhours(48)) |>
+  group_by(patient_id, encounter_block) |>
+  arrange(patient_id, encounter_block, recorded_dttm) |>
+  mutate(
+    next_start = lead(recorded_dttm),
+    # Segment ends at next row, vent episode end, or 48h mark — whichever comes first
+    cap_time = pmin(
+      as.POSIXct(vent_episode_end, tz = "UTC"),
+      t_rose_first + dhours(48)
+    ),
+    segment_end = pmin(
+      coalesce(next_start, cap_time),
+      cap_time
+    ),
+    segment_hours = as.numeric(difftime(segment_end, recorded_dttm, units = "hours")),
+    segment_hours_running = fifelse(med_dose > 0, segment_hours, 0)
+  ) |>
+  summarise(
+    total_continuous_para_hours_48h = sum(segment_hours_running, na.rm = TRUE),
+    .groups = "drop"
+  )
+
+
+
   
+# ── First time continuous paralytic started (dose > 0) per patient ──
+first_continuous_start <- paralytics_episodes_c |>
+  filter(med_dose > 0) |>
+  group_by(patient_id, encounter_block) |>
+  summarise(
+    first_continuous_start_time = min(recorded_dttm),
+    .groups = "drop"
+  )
+
 #first time where paralytic dose is not 0 - time to this from meeting criteria, time from intubation
 time_to_paralytic_tmp_c <- paralytics_episodes_c |>
-  filter(med_dose>0 ) |> #& mar_action_category=="given") |> #when finalized. 
+  filter(med_dose>0 ) |> 
   group_by(patient_id, encounter_block) |>
   arrange(patient_id, encounter_block, recorded_dttm) |>
   mutate(paralytic_start_time_c=min(recorded_dttm)) |>
@@ -1186,19 +1131,26 @@ paralytics_episodes_i <- paralytics_episodes_all_i |>
   mutate(recorded_dttm=as.POSIXct(recorded_dttm, tz="UTC")) |>
   filter(recorded_dttm>=as.POSIXct(vent_episode_start, tz="UTC") & recorded_dttm<=as.POSIXct(vent_episode_end, tz="UTC"))  #filters to 1st episode of IMV
 
-paralytics_episodes_i <- paralytics_episodes_all_i |>
+paralytics_episodes_i <- paralytics_episodes_i |>
   select(-any_of(c("med_order_id", "med_frequency")))
 
 paralytics_episodes_i<- unique(paralytics_episodes_i)
   
-#first time where paralytic dose is not 0 - time to this from meeting criteria, time from intubation
+paralytics_episodes_i <- paralytics_episodes_i |>
+  left_join(first_continuous_start, by = c("patient_id", "encounter_block")) |>
+  # Keep only intermittent doses that occurred BEFORE continuous started (or keep all if patient never had continuous)
+  filter(is.na(first_continuous_start_time) | recorded_dttm < first_continuous_start_time) |>
+  select(-first_continuous_start_time)
+
+#first time where paralytic dose is not 0 after meeting criteria - time to this from meeting criteria, time from intubation
 time_to_paralytic_tmp_i <- paralytics_episodes_i |>
-  filter(med_dose>0 ) |> #& mar_action_category=="given") |> #when finalized. 
+  filter(med_dose>0 ) |> 
+  filter(is.na(mar_action_category) | mar_action_category!="not_given") |> 
   group_by(patient_id, encounter_block) |>
   arrange(patient_id, encounter_block, recorded_dttm) |>
   mutate(ett_to_paralytic_i=difftime(recorded_dttm,vent_episode_start,  units = "hours")) |> #row level measure ett to each paralytic
   filter(ett_to_paralytic_i>=1) |>
-  mutate(paralytic_start_time_i=min(recorded_dttm)) |>
+  mutate(paralytic_start_time_i = if_else(any(recorded_dttm >= t_rose_first), min(recorded_dttm[recorded_dttm >= t_rose_first]),  as.POSIXct(NA))) |> #intermittent start time only includes earliest dose after meeting criteria
   mutate(criteria_to_paralytic_i=difftime(paralytic_start_time_i,t_rose_first,  units = "hours")) |>
   mutate(criteria_to_this_paralytic_i=difftime(admin_dttm,t_rose_first,  units = "hours")) |>
   mutate(ett_to_paralytic_i=difftime(paralytic_start_time_i,vent_episode_start,  units = "hours")) |> #now get global measure ett to first paralytic
@@ -1214,14 +1166,15 @@ time_to_paralytic_i <- time_to_paralytic_tmp_i |>
   select(hospitalization_id, med_category_i, patient_id, encounter_block, first_rose_pf, first_rose_sf, first_rose_fio2, first_rose_peep, first_rose_mode, t_rose_first, criteria, paralytic_start_time_i,criteria_to_this_paralytic_i, ett_to_paralytic_i, criteria_to_paralytic_i, para_route_i, intermittent_para)
 time_to_paralytic_i <- unique(time_to_paralytic_i)
 
-#first time where paralytic dose is not 0 - time to this from meeting criteria, time from intubation -> only counting rose intermittent criteria (>2 pushes)
+#first time where paralytic dose is not 0 - time to this from meeting criteria, time from 1 hour after intubation to exclude induction paralytics
 time_to_paralytic_tmp_i_rose <- paralytics_episodes_i |>
-  filter(med_dose>0 & mar_action_category=="given") |> #when finalized. 
+  filter(med_dose>0) |>
+  filter(is.na(mar_action_category) | mar_action_category!="not_given") |> 
   group_by(patient_id, encounter_block) |>
   arrange(patient_id, encounter_block, recorded_dttm) |>
   mutate(ett_to_paralytic_i_rose=difftime(recorded_dttm,vent_episode_start,  units = "hours")) |> #row level measure ett to each paralytic
   filter(ett_to_paralytic_i_rose>=1) |>
-  mutate(paralytic_start_time_i_rose=min(recorded_dttm)) |>
+  mutate(paralytic_start_time_i_rose = if_else(any(recorded_dttm >= t_rose_first), min(recorded_dttm[recorded_dttm >= t_rose_first]),  as.POSIXct(NA))) |> #intermittent start time only includes earliest dose after meeting criteria
   mutate(criteria_to_paralytic_i_rose=difftime(paralytic_start_time_i_rose,t_rose_first,  units = "hours")) |>
   mutate(criteria_to_this_paralytic_i=difftime(admin_dttm,t_rose_first,  units = "hours")) |>
   mutate(ett_to_paralytic_i_rose=difftime(paralytic_start_time_i_rose,vent_episode_start,  units = "hours")) |> #now get global measure ett to first paralytic
@@ -1229,43 +1182,43 @@ time_to_paralytic_tmp_i_rose <- paralytics_episodes_i |>
   mutate(how_many=1) |>
   arrange(hospitalization_id, admin_dttm) %>% group_by(hospitalization_id) %>% mutate(para_i_to_date=row_number()) |>
   mutate(intermittent_para=sum(how_many))|>
-  rename(med_category_i=med_category) # |>
-  #filter(intermittent_para>2) #|>
-  
+  rename(med_category_i=med_category) 
+
 para_24<- time_to_paralytic_tmp_i_rose |>
   filter(criteria_to_this_paralytic_i<24 & criteria_to_this_paralytic_i>0) |> #must be in first 24h after criteria
   mutate(intermittent_para24=sum(how_many))|>
- # filter(intermittent_para24>2) |>
   select(hospitalization_id, intermittent_para24)
 para_24 <- unique(para_24)
 
 para_48<- time_to_paralytic_tmp_i_rose |>
-  filter(criteria_to_this_paralytic_i<48 & criteria_to_this_paralytic_i>0) |> #must be in first 24h after criteria
+  filter(criteria_to_this_paralytic_i<48 & criteria_to_this_paralytic_i>0) |> #must be in first 48h after criteria
   mutate(intermittent_para48=sum(how_many))|>
-#  filter(intermittent_para48>2) |>
   select(hospitalization_id, intermittent_para48)
 para_48 <- unique(para_48)
 
 para_72<- time_to_paralytic_tmp_i_rose |>
-  filter(criteria_to_this_paralytic_i<72 & criteria_to_this_paralytic_i>0) |> #must be in first 24h after criteria
+  filter(criteria_to_this_paralytic_i<72 & criteria_to_this_paralytic_i>0) |> #must be in first 72h after criteria
   mutate(intermittent_para72=sum(how_many))|>
- # filter(intermittent_para72>2) |>
   select(hospitalization_id, intermittent_para72)
 para_72 <- unique(para_72)
 
 para_0<- time_to_paralytic_tmp_i_rose |>
-  filter(criteria_to_this_paralytic_i<0) |> #how many prior to meeting criteria
+  filter(criteria_to_this_paralytic_i<0) |> #how many prior to meeting criteria 
   mutate(intermittent_para0=sum(how_many)) |>
- # filter(intermittent_para0>2) |>
   select(hospitalization_id, intermittent_para0)
 para_0 <- unique(para_0)
 
 para_12<- time_to_paralytic_tmp_i_rose |>
-  filter(criteria_to_this_paralytic_i<12 & criteria_to_this_paralytic_i>0) |> #must be in first 24h after criteria
+  filter(criteria_to_this_paralytic_i<12 & criteria_to_this_paralytic_i>0) |> #must be in first 12h after criteria
   mutate(intermittent_para12=sum(how_many))|>
- # filter(intermittent_para72>2) |>
   select(hospitalization_id, intermittent_para12)
 para_12 <- unique(para_12)
+
+para_ever<- time_to_paralytic_tmp_i_rose |> #ever after meeting criteria
+  filter(admin_dttm< as.POSIXct(vent_episode_end, tz="UTC") & criteria_to_this_paralytic_i>0) |> #must be in first intubation after meeting criteria
+  mutate(intermittent_paraever=sum(how_many)) |>
+  select(hospitalization_id, intermittent_paraever)
+para_ever <- unique(para_ever)
 
 time_to_paralytic_tmp_i_rose <- time_to_paralytic_tmp_i_rose |>
   left_join(para_24) |>
@@ -1273,11 +1226,12 @@ time_to_paralytic_tmp_i_rose <- time_to_paralytic_tmp_i_rose |>
   left_join(para_72) |>
   left_join(para_0) |>
   left_join(para_12) |>
+  left_join(para_ever) |>
   filter(admin_dttm==paralytic_start_time_i_rose) |>
   filter(row_number()==1) 
   
   time_to_paralytic_i_rose <- time_to_paralytic_tmp_i_rose |>
-  select(hospitalization_id, med_category_i, patient_id, encounter_block, first_rose_pf, first_rose_sf, first_rose_fio2, first_rose_peep, first_rose_mode, t_rose_first, criteria, paralytic_start_time_i_rose, ett_to_paralytic_i_rose, criteria_to_paralytic_i_rose, para_route_i_rose, intermittent_para,intermittent_para12, intermittent_para24, intermittent_para48, intermittent_para72, intermittent_para0)
+  select(hospitalization_id, med_category_i, patient_id, encounter_block, first_rose_pf, first_rose_sf, first_rose_fio2, first_rose_peep, first_rose_mode, t_rose_first, criteria, paralytic_start_time_i_rose, ett_to_paralytic_i_rose, criteria_to_paralytic_i_rose, para_route_i_rose, intermittent_para,intermittent_para12, intermittent_para24, intermittent_para48, intermittent_para72, intermittent_para0, intermittent_paraever)
 time_to_paralytic_i_rose <- unique(time_to_paralytic_i_rose)
 
 ```
@@ -1337,29 +1291,56 @@ paralytic_start_all <- paralytic_start_c |>
 paralytic_start_all_rose <- paralytic_start_c |>
   full_join(paralytic_start_i_rose)
 
+#change to 0 so no intermittent_para is missing. 
+paralytic_start_all_rose<- paralytic_start_all_rose |>
+mutate(intermittent_para = coalesce(intermittent_para, 0),
+  intermittent_para0  = coalesce(intermittent_para0, 0),
+  intermittent_para12 = coalesce(intermittent_para12, 0),
+  intermittent_para24 = coalesce(intermittent_para24, 0),
+  intermittent_para48 = coalesce(intermittent_para48, 0),
+  intermittent_para72 = coalesce(intermittent_para72, 0), 
+  intermittent_paraever = coalesce(intermittent_paraever, 0)
+)
+
 #data among patients who meet ROSE criteria, including only para >2, cannot have been on continuous paralytics >3h prior to meeting criteria or received >2 pushes prior
-final_cohort_rose_rose<- rose_criteria_timing |>
+
+
+final_cohort_rose_rose <- rose_criteria_timing |>
   filter(!is.na(criteria)) |>
   left_join(paralytic_start_all_rose) |>
-  filter(is.na(criteria_to_paralytic_c) | criteria_to_paralytic_c>-3)  |> #can't start prior to 3 hours before meeting criteira *** need to make to time <3h prior to criteria. *** 
+  left_join(paralytics_prior_duration, by = c('patient_id', 'encounter_block')) |>
+  left_join(paralytics_post_duration, by = c('patient_id', 'encounter_block')) |>
+  left_join(paralytics_total_duration, by = c('patient_id', 'encounter_block')) |>
+  left_join(paralytics_48h_duration, by = c('patient_id', 'encounter_block')) |>
+  mutate(
+    total_continuous_para_hours_prior = coalesce(total_continuous_para_hours_prior, 0),
+    total_continuous_para_hours_post  = coalesce(total_continuous_para_hours_post, 0),
+    total_continuous_para_hours_all   = coalesce(total_continuous_para_hours_all, 0),
+    total_continuous_para_hours_48h   = coalesce(total_continuous_para_hours_48h, 0),
+  ) |>
+  # Exclude if >= 3 cumulative hours of continuous paralytics prior to criteria
+  filter(total_continuous_para_hours_prior < 3) |> #includes those with 0 who never received paralytics
   filter(is.na(criteria_to_paralytic_i_rose) | intermittent_para0 <3) |> #need less than 3 prior to starting
   mutate(any_paralytic_48 = fifelse((!is.na(criteria_to_paralytic_c) & criteria_to_paralytic_c<48)  | (!is.na(criteria_to_paralytic_i_rose) & intermittent_para48 >2), 1, 0),
          any_paralytic_12 = fifelse((!is.na(criteria_to_paralytic_c) & criteria_to_paralytic_c<12)  | (!is.na(criteria_to_paralytic_i_rose) & intermittent_para12 >2), 1, 0), 
          any_paralytic_24 = fifelse((!is.na(criteria_to_paralytic_c) & criteria_to_paralytic_c<24)  | (!is.na(criteria_to_paralytic_i_rose) & intermittent_para24 >2), 1, 0), 
          any_paralytic_72 = fifelse((!is.na(criteria_to_paralytic_c) & criteria_to_paralytic_c<72)  | (!is.na(criteria_to_paralytic_i_rose) & intermittent_para72 >2), 1, 0), 
-         any_paralytic_ever = fifelse((!is.na(criteria_to_paralytic_c))  | (!is.na(criteria_to_paralytic_i_rose)), 1, 0),
+         any_paralytic_ever = fifelse(!is.na(criteria_to_paralytic_c)  | (!is.na(criteria_to_paralytic_i_rose) & intermittent_paraever >2), 1, 0), #already have removed those with early continuous paralytics 3h, intermittent_paraever only looks at paralytics after meeting criteria. 
          first_rose_pf_all= coalesce(first_rose_pf, first_rose_sf)) |>
+  
   mutate(any_paralytic_48 = fifelse(is.na(any_paralytic_48), 0, any_paralytic_48),
          any_paralytic_24 = fifelse(is.na(any_paralytic_24), 0, any_paralytic_24),
          any_paralytic_12 = fifelse(is.na(any_paralytic_12), 0, any_paralytic_12),
-         any_paralytic_72 = fifelse(is.na(any_paralytic_72), 0, any_paralytic_72))
+         any_paralytic_72 = fifelse(is.na(any_paralytic_72), 0, any_paralytic_72),
+         any_paralytic_ever = fifelse(is.na(any_paralytic_ever), 0, any_paralytic_ever))
 
-cat('This yields an eligible ROSE cohort of', length(unique(final_cohort_rose_rose$hospitalization_id)), 'hospitalizations, of which',
-              sum(final_cohort_rose_rose$any_paralytic_48), 'were started on paralytics in 48 hours, ',
-    sum(final_cohort_rose_rose$any_paralytic_12), 'were started on paralytics in 12 hours, ',
-    sum(final_cohort_rose_rose$any_paralytic_24), 'were started on paralytics in 24 hours, and ',
-    sum(final_cohort_rose_rose$any_paralytic_72), 'were started on paralytics in 72 hours, all defined by continuous dosing or at least 3 pushes.',    
-    sum(final_cohort_rose_rose$any_paralytic_ever), 'were ever started on paralytics, all defined by continuous dosing or at least 1 push \n') 
+cat('This yields an eligible ROSE cohort of', 
+    length(unique(final_cohort_rose_rose$hospitalization_id)), 'hospitalizations, of which',
+    sum(final_cohort_rose_rose$any_paralytic_48), 'were started on paralytics in 48 hours,',
+    sum(final_cohort_rose_rose$any_paralytic_12), 'were started on paralytics in 12 hours,',
+    sum(final_cohort_rose_rose$any_paralytic_24), 'were started on paralytics in 24 hours, and',
+    sum(final_cohort_rose_rose$any_paralytic_72), 'were started on paralytics in 72 hours, and',    
+    sum(final_cohort_rose_rose$any_paralytic_ever), 'were ever started on paralytics, all defined by continuous dosing or at least 3 pushes after meeting criteria during the first intubation') 
 
 ```
 
@@ -1486,8 +1467,13 @@ hospitalization_vars <- clif_hospitalization |>
 temp <- hospitalization_vars |> select(patient_id, encounter_block, final_admission_dttm, final_discharge_dttm)
 temp<- unique(temp)
 cohort_times <- final_cohort_rose_rose |>
- # select(patient_id, encounter_block, t_rose_first, vent_episode_start, vent_episode_end) |>
-  left_join(temp) 
+  left_join(temp) |>
+  mutate(paralytic_time = case_when(
+    intermittent_para48 >2  & criteria_to_paralytic_c <= 48 ~ pmin(paralytic_start_time_c, paralytic_start_time_i_rose, na.rm = TRUE),
+    intermittent_para48 >2  & (is.na(criteria_to_paralytic_c) | criteria_to_paralytic_c > 48) ~ paralytic_start_time_i_rose,
+    (is.na(intermittent_para48) | intermittent_para48 < 3) & criteria_to_paralytic_c <= 48 ~ paralytic_start_time_c,
+    TRUE ~ as.POSIXct(NA)
+  ))
 rm(temp)
 
 #What Hospital is the Patient at When t_enrollment Occurs
@@ -1568,7 +1554,7 @@ code_status <- clif_code_status |>
   group_by(patient_id) |>
   mutate(code_status_category=case_when(code_status_category=="DNR" | code_status_category=="DNAR" ~"No resuscitation, okay with intubation", code_status_category=="DNR/DNI" | code_status_category=="DNAR/DNI"~"No resuscitation, no intubation", code_status_category=="DNI_only"~"Okay with resuscitation, except no intubation", code_status_category=="Full" | code_status_category=="Presume Full"~"Full", code_status_category=="Other"~"Other", code_status_category=="UDNR"~"UDNR", code_status_category=="AND"~"Allow natural death")) |>
   join(cohort_times, how = 'left') |>
-  select(patient_id, start_dttm, code_status_category, code_status_name, t_rose_first) |>
+  select(patient_id, start_dttm, code_status_category, code_status_name, t_rose_first, paralytic_time) |>
   ungroup()
   
 code_status_rose <- code_status |>
@@ -1577,9 +1563,20 @@ code_status_rose <- code_status |>
   group_by(patient_id) |>
   mutate(time_diff = abs(difftime(start_dttm, t_rose_first))) |>
   filter(time_diff == min(time_diff)) |>
-  select(-time_diff, -t_rose_first)
+  select(-time_diff, -t_rose_first, -paralytic_time)
 
 code_status_rose <- unique(code_status_rose) #most recently updated code status info at time of meeting rose criteria, if missing then presume full. 
+
+code_status_paralytics <- code_status |>
+  filter(!is.na(start_dttm)) |>
+  filter(as.POSIXct(start_dttm, tz="UTC") <=as.POSIXct(paralytic_time, tz="UTC")) |>
+  group_by(patient_id) |>
+  mutate(time_diff_paralytics = abs(difftime(start_dttm, paralytic_time))) |>
+  filter(time_diff_paralytics == min(time_diff_paralytics)) |>
+  select(-time_diff_paralytics, -t_rose_first, -paralytic_time) |>
+  rename(code_status_category_paralytics=code_status_category, code_status_name_paralytics=code_status_name)
+
+code_status_paralytics <- unique(code_status_paralytics) #most recently updated code status info at time of meeting rose criteria, if missing then presume full. 
 
 #Calculate BMI
 bmi <- clif_vitals |>
@@ -1628,17 +1625,44 @@ bmi <- clif_vitals |>
   select(patient_id, encounter_block, study_height_cm, study_weight_kg, bmi)
 
 temp_times <- cohort_times |>
-  select(patient_id, encounter_block, t_rose_first)
-# min_pf <- vent_data |>
-#   filter(!is.na(pf_ratio)) |>
+  select(patient_id, encounter_block, t_rose_first, paralytic_time)
+
+##calculate min p/f ratio in 12h prior to t_enrollment - if no p/f use s/f in that time period - can use first_rose_pf_all instead, which accounts for pf too close to ett 
+# pf_pre_criteria <- vent_data |>
+#   filter(!is.na(pf_ratio) | !is.na(sf_ratio)) |>
 #   join(temp_times, how = 'left') |>
-#   filter(as.POSIXct(recorded_dttm, tz="UTC")>=as.POSIXct(vent_episode_start, tz="UTC") &
-#            as.POSIXct(recorded_dttm, tz="UTC")<=as.POSIXct(t_rose_first, tz="UTC")) |>
+#   filter(as.POSIXct(recorded_dttm, tz="UTC")>as.POSIXct(vent_episode_start, tz="UTC") &
+#            as.POSIXct(recorded_dttm)>=as.POSIXct(t_rose_first)-dhours(6) & 
+#            as.POSIXct(recorded_dttm)<=as.POSIXct(t_rose_first)) |>
 #   group_by(patient_id, encounter_block) |>
-#   mutate(min_pf_ratio=min(pf_ratio, na.rm = TRUE)) |>
-#   filter(row_number()==1) |>
+#   summarise(
+#     lowest_pf = ifelse(all(is.na(pf_ratio)), NA_real_, min(as.numeric(pf_ratio), na.rm = TRUE)),
+#     lowest_sf = ifelse(all(is.na(sf_ratio)), NA_real_, min(as.numeric(sf_ratio), na.rm = TRUE)),
+#     .groups = "drop") |>
+#   mutate(lowest_ratio = coalesce(lowest_pf, lowest_sf)) |>
+#   mutate(lowest_either_ratio = pmin(lowest_pf, lowest_sf)) |>
 #   ungroup() |>
-#   select(patient_id, encounter_block, min_pf_ratio)
+#   select(patient_id, encounter_block, lowest_ratio, lowest_either_ratio, lowest_pf,lowest_sf ) 
+# pf_pre_criteria <- unique(pf_pre_criteria)
+
+##calculate min p/f ratio in 12h prior to paralytics - if no p/f use s/f in that time period
+pf_paralytic <- vent_data |>
+  filter(!is.na(pf_ratio) | !is.na(sf_ratio)) |>
+  left_join(temp_times) |>
+  filter(as.POSIXct(recorded_dttm, tz="UTC")>=as.POSIXct(vent_episode_start, tz="UTC") &
+           as.POSIXct(recorded_dttm)>=as.POSIXct(paralytic_time)-dhours(6) & 
+           as.POSIXct(recorded_dttm)<=as.POSIXct(paralytic_time)) |>
+  group_by(patient_id, encounter_block) |>
+  summarise(
+    lowest_pf_paralytic = ifelse(all(is.na(pf_ratio)), NA_real_, min(as.numeric(pf_ratio), na.rm = TRUE)),
+    lowest_sf_paralytic = ifelse(all(is.na(sf_ratio)), NA_real_, min(as.numeric(sf_ratio), na.rm = TRUE)),
+    .groups = "drop") |>
+  mutate(lowest_ratio_paralytic = coalesce(lowest_pf_paralytic, lowest_sf_paralytic)) |>
+  mutate(lowest_either_ratio_paralytic = pmin(lowest_pf_paralytic, lowest_sf_paralytic)) |>
+  ungroup() |>
+  select(patient_id, encounter_block, lowest_ratio_paralytic, lowest_either_ratio_paralytic, lowest_pf_paralytic,lowest_sf_paralytic ) 
+pf_paralytic <- unique(pf_paralytic)
+
 
 #Set tidal volume at time of t_enrollment -> will ultimately use weight calculated above to determine TV in cc/kg. 
 set_tv <- vent_data |>
@@ -1653,9 +1677,20 @@ set_tv <- vent_data |>
   select(patient_id, encounter_block, set_tv_enrollment) 
 set_tv <- unique(set_tv)
 
+set_tv_paralytic <- vent_data |>
+  filter(!is.na(tidal_volume_set)) |>
+  join(temp_times, how = 'left') |>
+  filter(as.POSIXct(recorded_dttm, tz="UTC")>=as.POSIXct(vent_episode_start, tz="UTC") &
+           as.POSIXct(recorded_dttm, tz="UTC")<=as.POSIXct(paralytic_time, tz="UTC")) |>
+  group_by(patient_id, encounter_block) |>
+  arrange(patient_id, encounter_block, recorded_dttm) |>
+  mutate(set_tv_paralytic=flast(tidal_volume_set, na.rm = TRUE)) |>
+  ungroup() |>
+  select(patient_id, encounter_block, set_tv_paralytic) 
+set_tv_paralytic <- unique(set_tv_paralytic)
+
 #Highest minute ventilation observed in 12 hours prior to time of t_enrollment 
 mv_obs <- vent_data |>
- # filter(!is.na(minute_vent_obs)) |>
   join(temp_times, how = 'left') |>
   filter(as.POSIXct(recorded_dttm, tz="UTC")>=as.POSIXct(vent_episode_start, tz="UTC") &
            as.POSIXct(recorded_dttm)>=as.POSIXct(t_rose_first)-dhours(12) & 
@@ -1670,6 +1705,23 @@ mv_obs <- vent_data |>
   ungroup() |>
   select(patient_id, encounter_block, mv_obs_max, mv_set_max) 
 mv_obs <- unique(mv_obs)
+
+mv_obs_paralytic <- vent_data |>
+  join(temp_times, how = 'left') |>
+  filter(as.POSIXct(recorded_dttm, tz="UTC")>=as.POSIXct(vent_episode_start, tz="UTC") &
+           as.POSIXct(recorded_dttm)>=as.POSIXct(paralytic_time)-dhours(12) & 
+           as.POSIXct(recorded_dttm)<=as.POSIXct(paralytic_time)) |>
+  group_by(patient_id, encounter_block) |>
+  mutate(mv_set_paralytic=tidal_volume_set* resp_rate_set/1000, 
+    mv_obs_max_paralytic=suppressWarnings(max(minute_vent_obs, na.rm = TRUE)), 
+    mv_set_max_paralytic=suppressWarnings(max(mv_set_paralytic, na.rm = TRUE)),
+    mv_obs_max_paralytic=fifelse(mv_obs_max_paralytic==-Inf, NA, mv_obs_max_paralytic), 
+    mv_set_max_paralytic=fifelse(mv_set_max_paralytic==-Inf, NA, mv_set_max_paralytic) 
+    ) |>
+  ungroup() |>
+  select(patient_id, encounter_block, mv_obs_max_paralytic, mv_set_max_paralytic) 
+mv_obs_paralytic <- unique(mv_obs_paralytic)
+
 
 #Highest plateau pressure observed in 24 hours prior to time of t_enrollment 
 plat_tmp <- vent_data |>
@@ -1702,19 +1754,8 @@ plat <- unique(plat) |>
          compliance_estimate_min=fifelse(compliance_estimate_min <Inf, compliance_estimate_min, NaN),
          measured_plateau=fifelse(!is.na(plat_max), 1, 0))
   
-# compliance <- plat_tmp |>
-#   join(plat, how='left') |>
-#   group_by(patient_id, encounter_block) |>
-#   mutate(compliance=tidal_volume_set / (plat_estimate_max - peep_set)) |>
-#   mutate(compliance_min = min(compliance, na.rm=TRUE)) |>
-#   ungroup() |>
-#   select(patient_id, encounter_block, compliance_min, plat_estimate_max, measured_plateau, peep_set, tidal_volume_set) |>
-#   filter(compliance_min <Inf) 
-# compliance <- unique(compliance)
-  
 #Biggest difference between set and observed RR in 12 hours prior to time of t_enrollment 
 set_rr <- vent_data |>
- # filter(!is.na(resp_rate_obs)) |>
   join(temp_times, how = 'left') |>
   filter(as.POSIXct(recorded_dttm, tz="UTC")>=as.POSIXct(vent_episode_start, tz="UTC") &
            as.POSIXct(recorded_dttm)>=as.POSIXct(t_rose_first)-dhours(12) & 
@@ -1729,6 +1770,23 @@ set_rr <- vent_data |>
   ungroup() |>
   select(patient_id, encounter_block, rr_diff_max) 
 set_rr <- unique(set_rr)
+
+
+set_rr_paralytic <- vent_data |>
+  join(temp_times, how = 'left') |>
+  filter(as.POSIXct(recorded_dttm, tz="UTC")>=as.POSIXct(vent_episode_start, tz="UTC") &
+           as.POSIXct(recorded_dttm)>=as.POSIXct(paralytic_time)-dhours(12) & 
+           as.POSIXct(recorded_dttm)<=as.POSIXct(paralytic_time)) |>
+  filter(resp_rate_obs<=90 | is.na(resp_rate_obs)) |>
+  mutate(rr_diff_paralytic=resp_rate_obs-resp_rate_set) |>
+  group_by(patient_id, encounter_block) |>
+  arrange(patient_id, encounter_block, recorded_dttm) |>
+  mutate(rr_diff_max_paralytic=suppressWarnings(max(rr_diff_paralytic, na.rm = TRUE))) |>
+  mutate(rr_diff_max_paralytic=fifelse(rr_diff_max_paralytic<0 & rr_diff_max_paralytic>-Inf, 0, rr_diff_max_paralytic)) |> #if none recorded or <0, assume 0
+  mutate(rr_diff_max_paralytic=fifelse(rr_diff_max_paralytic==-Inf, NA, rr_diff_max_paralytic)) |> #if none recorded or <0, assume 0
+  ungroup() |>
+  select(patient_id, encounter_block, rr_diff_max_paralytic) 
+set_rr_paralytic <- unique(set_rr_paralytic)
 rm(temp_times)
 
 #Calculate Norepinephrine Equivalent
@@ -1749,9 +1807,8 @@ pressor_data <- clif_medication_admin_continuous |>
   collect()
 
   pressor_units <- as.data.frame(table(pressor_data$med_dose_unit, useNA = "always"))
-  #write_csv(pressor_units, paste0(project_location, '/project_output/aggregate_pressor_units.csv'))
-
-  #Define if a Pressor Needs Weight Based Dosing
+  
+#Define if a Pressor Needs Weight Based Dosing
 pressor_data <- pressor_data |>
   mutate(med_dose_unit=tolower(med_dose_unit)) |>
   mutate(needs_wt_based=fifelse((med_dose_unit=="mcg/min" | med_dose_unit=="mg/min" | med_dose_unit=="ng/min" ), 1, 0)) |>
@@ -1812,6 +1869,10 @@ pressor_data <- pressor_data |>
     med_category=="dobutamine" , wt_dose
   )) |>
   fill(dobut_dose, .direction = "down") |>
+  mutate(dobut_on=fcase(
+    dobut_dose>0 , 1,
+    (is.na(dobut_dose) | dobut_dose==0) , 0 )) |>
+  mutate(dobut_dose=fifelse(is.na(dobut_dose), 0, dobut_dose)) |>
   mutate(milrinone_dose=fcase(
     med_category=="milrinone" , wt_dose
   )) |>
@@ -1874,7 +1935,8 @@ sofa_gcs <- clif_patient_assessments |>
 
 # Calculate lowest RASS for sofa in 24h prior to enrollment
 rass <- clif_patient_assessments |> 
-  filter(assessment_category == "RASS") |> 
+  filter(assessment_category == "RASS" | assessment_category=="rass") |> 
+  mutate(assessment_category=="RASS") |>
   filter(hospitalization_id %in% cohort_hospitalization_ids$hospitalization_id) |> 
   #Filter Outliers  
   filter(numerical_value<=4 & numerical_value>-6) |>
@@ -1919,14 +1981,14 @@ sofa_rass<- sofa_rass |>
   select(patient_id, encounter_block, max_sofa_rass) 
 
 #max rass for dyssynchrony surrogate 12 h prior
-max_rass <- rass |>
+max_rass12 <- rass |>
  filter(as.POSIXct(recorded_dttm, tz="UTC")>=as.POSIXct(vent_episode_start, tz="UTC") &
            as.POSIXct(recorded_dttm)>=as.POSIXct(t_rose_first)-dhours(12) & 
            as.POSIXct(recorded_dttm)<=as.POSIXct(t_rose_first)) |>
   group_by(patient_id, encounter_block) |>
-  mutate(max_rass=suppressWarnings(max(numerical_value, na.rm = TRUE))) |>
+  mutate(max_rass12=suppressWarnings(max(numerical_value, na.rm = TRUE))) |>
   filter(row_number()==1) |>
-  select(patient_id, encounter_block, max_rass) |> 
+  select(patient_id, encounter_block, max_rass12) |> 
   ungroup()
 
 #min rass for dyssynchrony surrogate 12 h prior
@@ -1940,15 +2002,88 @@ min_rass12 <- rass |>
   select(patient_id, encounter_block, min_rass12) |> 
   ungroup()
 
+
+#max rass for dyssynchrony surrogate 12 h prior nmba
+paralytic_start_time <- cohort_times |>
+  select(patient_id, hospitalization_id, encounter_block, paralytic_time)
+
+max_rass12_paralytics <- rass |>
+  left_join(paralytic_start_time) |>
+ filter(as.POSIXct(recorded_dttm, tz="UTC")>=as.POSIXct(vent_episode_start, tz="UTC") &
+           as.POSIXct(recorded_dttm)>=as.POSIXct(paralytic_time)-dhours(12) & 
+           as.POSIXct(recorded_dttm)<=as.POSIXct(paralytic_time)) |>
+  group_by(patient_id, encounter_block) |>
+  mutate(max_rass12_paralytic=suppressWarnings(max(numerical_value, na.rm = TRUE))) |>
+  filter(row_number()==1) |>
+  select(patient_id, encounter_block, max_rass12_paralytic) |> 
+  ungroup()
+
+#min rass for dyssynchrony surrogate 12 h prior
+min_rass12_paralytics <- rass |>
+ left_join(paralytic_start_time) |>
+ filter(as.POSIXct(recorded_dttm, tz="UTC")>=as.POSIXct(vent_episode_start, tz="UTC") &
+           as.POSIXct(recorded_dttm)>=as.POSIXct(paralytic_time)-dhours(12) & 
+           as.POSIXct(recorded_dttm)<=as.POSIXct(paralytic_time)) |>
+  group_by(patient_id, encounter_block) |>
+  mutate(min_rass12_paralytic=suppressWarnings(min(numerical_value, na.rm = TRUE))) |>
+  filter(row_number()==1) |>
+  select(patient_id, encounter_block, min_rass12_paralytic) |> 
+  ungroup()
+
 #Calculate Lowest MAP 24h prior to enrollment for SOFA
-sofa_map <- clif_vitals |>
+#calculate map from sbp and dbp
+sbp <- clif_vitals |>
+  filter(vital_category %in% c('sbp')) |>
+  rename(sbp= vital_value) |>
+  select(-vital_name, -vital_category, -meas_site_name) |>
+  filter(sbp >= 0 & sbp<250) |>
+  collect()
+
+sbp_clean <- sbp %>%
+  group_by(hospitalization_id, recorded_dttm, patient_id, encounter_block) %>%
+  summarize(sbp_value = min(sbp, na.rm = TRUE), .groups = "drop")
+
+dbp <- clif_vitals |>
+  filter(vital_category %in% c('dbp')) |>
+  rename(dbp= vital_value) |>
+  select(-vital_name, -vital_category, -meas_site_name) |>
+  filter(dbp >= 0 & dbp<250) |>
+  collect()
+
+dbp_clean <- dbp %>%
+  group_by(hospitalization_id, recorded_dttm, patient_id, encounter_block) %>%
+  summarize(dbp_value = min(dbp, na.rm = TRUE), .groups = "drop")
+
+bp <- left_join(sbp_clean, dbp_clean) |>
+  filter( (sbp_value==0 & dbp_value==0) | (sbp_value > dbp_value )) |>
+  mutate(map_calculated = (sbp_value + 2 * dbp_value)/3)
+
+map <- clif_vitals |>
   filter(vital_category %in% c('map')) |>
+  rename(map= vital_value) |>
+  select(-vital_name, -vital_category, -meas_site_name) |>
+  filter(map >=0 & map<250) |>
+  collect()
+
+
+map_clean <- map %>%
+  group_by(hospitalization_id, recorded_dttm, patient_id, encounter_block) %>%
+  summarize(map_value = min(map, na.rm = TRUE), .groups = "drop")
+
+bp <- full_join(map_clean, bp) 
+
+bp<- bp %>% mutate(vital_value = case_when(
+      map_value == 0 & !is.na(map_calculated) ~ map_calculated,
+      map_value == 0 & is.na(map_calculated)  ~ 0,
+      map_value > 0                           ~ map_value,
+      is.na(map_value)                        ~ map_calculated))
+
+sofa_map <- bp |>
+  select(-map_value, -sbp_value, -dbp_value, -map_calculated) |>
   filter(hospitalization_id %in% cohort_hospitalization_ids$hospitalization_id) |>
-  #Filter Outliers MAP>250
-  filter(vital_value<=250) |>
   collect() |>
-  join(cohort_hospitalization_ids, how = 'left') |>
-  join(cohort_times, how = 'left') |>
+  left_join(cohort_hospitalization_ids,  by = join_by(hospitalization_id, encounter_block, patient_id)) |>
+  left_join(cohort_times,  by = join_by(hospitalization_id, encounter_block, patient_id)) |>
   #Pick Lowest MAP in 24h prior to enrollment
   filter(as.POSIXct(recorded_dttm)>=as.POSIXct(t_rose_first)-dhours(24) & 
            as.POSIXct(recorded_dttm)<=as.POSIXct(t_rose_first)) |>
@@ -1956,7 +2091,7 @@ sofa_map <- clif_vitals |>
   group_by(patient_id, encounter_block) |>
   mutate(max_sofa_map=suppressWarnings(max(sofa_map, na.rm = TRUE))) |>
   filter(row_number()==1) |>
-  select(patient_id, encounter_block, max_sofa_map) |> #, norepi_dose, epi_dose, vaso_dose, angiotensin_dose, dopa_dose, phenyl_dose) |>
+  select(patient_id, encounter_block, max_sofa_map) |> 
   ungroup()
 
 #Calculate highest bilirubin in 24h prior to enrollment for sofa
@@ -2040,7 +2175,21 @@ filter(hospitalization_id %in% cohort_hospitalization_ids$hospitalization_id) |>
   collect()|>
   join(cohort_hospitalization_ids, how = 'left', overid=0)  |>
   join(cohort_times, how = 'left', overid=0)  |>
-  join(vent_times, how="full") |>
+  join(vent_times, how="full") 
+
+min_ph_paralytics <- pH|>
+  #Pick in 24h prior to enrollment, while intubated
+  filter(as.POSIXct(lab_collect_dttm)>=as.POSIXct(paralytic_time)-dhours(24) & 
+           as.POSIXct(lab_collect_dttm)>=as.POSIXct(vent_episode_start, tz="UTC") & 
+           as.POSIXct(lab_collect_dttm)<=as.POSIXct(paralytic_time)) |>
+  group_by(patient_id, encounter_block) |>
+  mutate(min_ph_paralytic=suppressWarnings(min(lab_value_numeric, na.rm = TRUE))) |>
+  filter(row_number()==1) |>
+  select(patient_id, encounter_block, min_ph_paralytic) |> 
+  ungroup()
+
+
+min_ph <- pH |>
   #Pick in 24h prior to enrollment, while intubated
   filter(as.POSIXct(lab_collect_dttm)>=as.POSIXct(t_rose_first)-dhours(24) & 
            as.POSIXct(lab_collect_dttm)>=as.POSIXct(vent_episode_start, tz="UTC") & 
@@ -2052,18 +2201,22 @@ filter(hospitalization_id %in% cohort_hospitalization_ids$hospitalization_id) |>
   ungroup()
 
 paralytic_start_all <- paralytic_start_all |>
+  left_join(paralytic_start_time) |>
   select(hospitalization_id, med_category_c, patient_id, encounter_block, paralytic_start_time_c, ett_to_paralytic_c, ratio_at_paralytics_c, para_route, med_category_i, paralytic_start_time_i, ett_to_paralytic_i, para_route_i, intermittent_para, ratio_at_paralytics_i) |>
     rename(continous_paralytic_given = med_category_c, paralytic_start_time_c_all= paralytic_start_time_c, ett_to_paralytic_c_all=ett_to_paralytic_c, any_continuous=para_route, ratio_at_paralytics_c_all=ratio_at_paralytics_c, intermittent_paralytic_given = med_category_i, paralytic_start_time_i_all=paralytic_start_time_i, ett_to_paralytic_i_all=ett_to_paralytic_i, any_intermittent=para_route_i, intermittent_para_all=intermittent_para, ratio_at_paralytics_i_all=ratio_at_paralytics_i) 
 
 rose_analytic_data <- hospitalization_vars |>
   left_join(demos) |>
   left_join(hospital_location) |>
-  left_join(bmi) |>
+  left_join(bmi)
+  
+rose_analytic_data<- rose_analytic_data |>
   left_join(final_cohort_rose_rose) |>
   left_join(vent_times) |>
   left_join(prone_episodes) |>
-  left_join(pH) |>
+  left_join(min_ph) |>
   left_join(code_status_rose) |>
+  left_join(pf_paralytic) |>
   left_join(set_rr) |>
   left_join(set_tv) |>
   left_join(mv_obs) |>
@@ -2071,7 +2224,7 @@ rose_analytic_data <- hospitalization_vars |>
   left_join(norepi_equivalent) |>
   left_join(min_rass) |>
   left_join(min_rass12) |>
-  left_join(max_rass) |>
+  left_join(max_rass12) |>
   left_join(sofa_pressors) |>
   left_join(sofa_map) |>
   left_join(sofa_rass) |>
@@ -2081,7 +2234,15 @@ rose_analytic_data <- hospitalization_vars |>
   left_join(sofa_plt) |>
   left_join(sars_cov2) |>
   left_join(paralytic_start_all)|>
-
+  left_join(code_status_paralytics) |>
+  left_join(set_tv_paralytic) |>
+  left_join(set_rr_paralytic) |>
+  left_join(mv_obs_paralytic) |>
+  left_join(max_rass12_paralytics) |>
+  left_join(min_rass12_paralytics) |>
+  left_join(min_ph_paralytics) |>
+  left_join(paralytic_start_time) |>
+  
   #IF norepi equivalent is missing it means patient had no vasoactives recorded
   mutate(nee_pressor_dose=fifelse(is.na(nee_pressor_dose), 0, nee_pressor_dose)) |>
   mutate(max_sofa_pressor=fifelse(is.na(max_sofa_pressor), 0, max_sofa_pressor)) |>
@@ -2104,11 +2265,9 @@ rose_analytic_data <- hospitalization_vars |>
     tolower(race_category) %!in% c('white', 'black or african american', 'asian', 'unknown'), 'other',
     tolower(race_category) == "unknown" | is.na(race_category) |
     tolower(ethnicity_category) == "unknown" | is.na(ethnicity_category), "unknown")) |>
-  #select(-mode_category, -device_category) |>
   #Calculate Time from Admission to Enrollment
   mutate(days_admit_to_enroll=as.duration(t_rose_first-final_admission_dttm)/ddays(1)) |>
   distinct()
-#rm(bmi, demos, hospitalization_vars, hospital_location, min_pf, norepi_equivalent)
 
 #calculate minimum time to start paralytic (whether intermittent or continuous)
 rose_analytic_data <- rose_analytic_data |>
@@ -2121,8 +2280,8 @@ rose_analytic_data <- rose_analytic_data |>
 
 #clean up missing data
 rose_analytic_data <- rose_analytic_data |>
-  mutate(first_rose_mode= case_when(first_rose_mode=="Assist Control-Volume Control" | first_rose_mode=="Pressure-Regulated Volume Control" | first_rose_mode=="Pressure Control" ~first_rose_mode, first_rose_mode=="Other"| first_rose_mode=="Pressure Support/CPAP" | first_rose_mode=="Blow by" | first_rose_mode=="Volume Support"~"Other", first_rose_mode=="SIMV"~"SIMV")) 
-
+  mutate(first_rose_mode=tolower(first_rose_mode)) |>
+  mutate(first_rose_mode= case_when(first_rose_mode=="assist control-volume control" | first_rose_mode=="pressure-regulated volume control" | first_rose_mode=="pressure control" ~first_rose_mode, first_rose_mode=="other"| first_rose_mode=="pressure support/cpap" | first_rose_mode=="blow by" | first_rose_mode=="volume support"~"other", first_rose_mode=="simv"~"simv")) 
 
 write_parquet(rose_analytic_data, paste0(project_location, '/project_tables_DO_NOT_UPLOAD/rose_analytic_data.parquet'))
 
@@ -2145,4 +2304,3 @@ save(cohort_hospitalization_ids, file = paste0(project_location, "/project_table
 
 toc() #End R time
 ```
-

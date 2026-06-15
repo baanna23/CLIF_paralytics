@@ -131,13 +131,13 @@ rose_analytic_df <- general_analytic_df |>
   dys_ph = case_when(min_ph <=7.4 ~0, min_ph >7.4~1), 
   dys_rr = case_when(rr_diff_max <15 ~0, rr_diff_max >= 15~1), 
   dys_mv = case_when(mv_obs_max <15 ~0, mv_obs_max >= 15~1), 
-  agitated_rass = fifelse(max_rass >1, 1,0), 
+  agitated_rass = fifelse(max_rass12 >1, 1,0), 
   either_dys = fifelse(dys_rr==1 | dys_mv==1 , 1, 0), 
   mv_obs_max_impute =coalesce(mv_obs_max, mv_set_max), 
   rr_diff_max_impute = coalesce(rr_diff_max, 0),
   dys_rr_impute = case_when( rr_diff_max <15 | is.na(rr_diff_max) ~0, rr_diff_max >= 15~1), #90% if missing, then assume not dyssynchrony
   dys_mv_impute = case_when(mv_obs_max <15 | is.na(mv_obs_max) ~0, mv_obs_max >= 15~1), #90%
-  agitated_rass_impute = fifelse(max_rass <2 | is.na(max_rass), 0,1), 
+  agitated_rass_impute = fifelse(max_rass12 <2 | is.na(max_rass12), 0,1), 
   either_dys_impute = fifelse(dys_rr_impute==1 | dys_mv_impute==1, 1, 0), 
   hypoxemia = fifelse(pfround <100, 1, 0), 
   code_status_presume = fifelse(!is.na(code_status_category), code_status_category, "Full"), 
@@ -145,14 +145,13 @@ rose_analytic_df <- general_analytic_df |>
   hypoxemia_dys = case_when(hypoxemia==1 & either_dys_impute==0~"hypoxemia", hypoxemia==1 & either_dys_impute==1~"hypoxemia and dyssynchrony", hypoxemia==0 & either_dys_impute==1~"dyssynchrony" , hypoxemia==0 & either_dys_impute==0~"neither")) |>
   filter(is.na(early_prone) | early_prone==0)|>
   collect()
-#location <- as.data.frame(table(rose_analytic_df$enrollment_location_type, useNA = "always"))
-#write_csv(location, paste0(project_location, '/project_output_UPLOAD/aggregate_location.csv'))
 
-aggregate_code_status<-as.data.frame(table(rose_analytic_df$code_status_presume, rose_analytic_df$code_status_partial, useNA = "always")) # if missing at time meet criteria then presume full. 
-aggregate_code_status<- aggregate_code_status %>% mutate(Freq_string=fifelse(Freq<10 & Freq!=0,"<10",as.character(Freq))) 
-aggregate_code_status<- aggregate_code_status %>% select(-Freq)
+#report out code status data
+#aggregate_code_status<-as.data.frame(table(rose_analytic_df$code_status_presume, rose_analytic_df$code_status_partial, useNA = "always")) # if missing at time meet criteria then presume full. 
+#aggregate_code_status<- aggregate_code_status %>% mutate(Freq_string=fifelse(Freq<10 & Freq!=0,"<10",as.character(Freq))) 
+#aggregate_code_status<- aggregate_code_status %>% select(-Freq)
 
-write_csv(aggregate_code_status, paste0(project_location, '/project_output_UPLOAD/aggregate_code_status.csv'))
+#write_csv(aggregate_code_status, paste0(project_location, '/project_output_UPLOAD/aggregate_code_status.csv'))
 
 rose_analytic_df <- rose_analytic_df |>
   mutate(covid_positive =case_when(sars_cov2_positive == '1'~1, is.na(sars_cov2_positive) | sars_cov2_positive=='0'   ~0),
@@ -162,6 +161,29 @@ rose_analytic_df <- rose_analytic_df |>
       enrollment_location_type %in% c("cardiothoracic_surgical_icu", "surgical_icu", "burn_icu") ~ "surgical_icu",
       enrollment_location_type %in% c("neuro_icu", "neurosurgical_icu", "mixed_neuro_icu") ~ "mixed_neuro_icu",
       enrollment_location_type == "medical_icu" ~ "medical_icu"))
+
+#variables at the time of paralytic initation - it's initial paralytic time, if not post-criteira remove later. 
+rose_analytic_df <- rose_analytic_df |> 
+  mutate(initial_paralytic_type = case_when(paralytic_time==paralytic_start_time_c~"continuous", paralytic_time==paralytic_start_time_i_rose~"intermittent"),
+  pfround_paralytic = round(lowest_ratio_paralytic),
+  deep_rass_paralytic = case_when(min_rass12_paralytic< -3~1, min_rass12_paralytic>-4~0),
+  ph_bad_cat_paralytic = case_when(is.na(min_ph_paralytic) | min_ph_paralytic >=7.2 ~0, min_ph_paralytic <7.2~1), 
+  min_ph_paralytic = round(min_ph_paralytic, digits=2),
+  dys_ph_paralytic = case_when(min_ph_paralytic <=7.4 ~0, min_ph_paralytic >7.4~1), 
+  dys_rr_paralytic = case_when(rr_diff_max_paralytic <15 ~0, rr_diff_max_paralytic >= 15~1), 
+  dys_mv_paralytic = case_when(mv_obs_max_paralytic <15 ~0, mv_obs_max_paralytic >= 15~1), 
+  agitated_rass_paralytic = fifelse(max_rass12_paralytic >1, 1,0), 
+  either_dys_paralytic = fifelse(dys_rr_paralytic==1 | dys_mv_paralytic==1 , 1, 0), 
+  mv_obs_max_impute_paralytic =coalesce(mv_obs_max_paralytic, mv_set_max_paralytic), 
+  rr_diff_max_impute_paralytic = coalesce(rr_diff_max_paralytic, 0),
+  dys_rr_impute_paralytic = case_when( rr_diff_max_paralytic <15 | is.na(rr_diff_max_paralytic) ~0, rr_diff_max_paralytic >= 15~1), #90% if missing, then assume not dyssynchrony
+  dys_mv_impute_paralytic = case_when(mv_obs_max_paralytic <15 | is.na(mv_obs_max_paralytic) ~0, mv_obs_max_paralytic >= 15~1), #90%
+  agitated_rass_impute_paralytic = fifelse(max_rass12_paralytic <2 | is.na(max_rass12_paralytic), 0,1), 
+  either_dys_impute_paralytic = fifelse(dys_rr_impute_paralytic==1 | dys_mv_impute_paralytic==1, 1, 0), 
+  hypoxemia_paralytic = fifelse(pfround_paralytic <100, 1, 0), 
+  hypoxemia_dys_paralytic = case_when(hypoxemia_paralytic==1 & either_dys_impute_paralytic==0~"hypoxemia", hypoxemia_paralytic==1 & either_dys_impute_paralytic==1~"hypoxemia and dyssynchrony", hypoxemia_paralytic==0 & either_dys_impute_paralytic==1~"dyssynchrony" , hypoxemia_paralytic==0 & either_dys_impute_paralytic==0~"neither")) |>
+  collect()
+
 
 #For patient_ids with more than one encounter block, select one at random
 rose_analytic_df <- rose_analytic_df |>
@@ -183,11 +205,12 @@ cat('At', site, length(unique(rose_analytic_df$patient_id)), 'met cohort eligibi
 rose_analytic_df <- rose_analytic_df |>
   mutate(female=fifelse(tolower(sex_category)=='female', 1, 0), 
          year=year(t_rose_first),
-         calendar_month=month(t_rose_first), 
-         qualify_intermittent=case_when(criteria_to_paralytic_i_rose<=48 & criteria_to_paralytic_i_rose>=0~1),
-         qualify_intermittent=fifelse(!is.na(qualify_intermittent), qualify_intermittent, 0),
-         qualify_continuous=case_when(criteria_to_paralytic_c<=48 & criteria_to_paralytic_c>=-3~1),
-         qualify_continuous=fifelse(!is.na(qualify_continuous), qualify_continuous, 0)) |>
+         calendar_month=month(t_rose_first)  
+        # qualify_intermittent=case_when(criteria_to_paralytic_i_rose<=48 & criteria_to_paralytic_i_rose>=0~1),
+        # qualify_intermittent=fifelse(!is.na(qualify_intermittent), qualify_intermittent, 0),
+        # qualify_continuous=case_when(criteria_to_paralytic_c<=48 & **criteria_to_paralytic_c>=-3~1),
+        # qualify_continuous=fifelse(!is.na(qualify_continuous), qualify_continuous, 0)
+        ) |>
   arrange(year, calendar_month)
 
 #Report Out Minimum and Maximum Times
@@ -426,30 +449,30 @@ site_month_labels <- month_labels[min_month:max_month]
 max_monthly_n <- max(paralytics_per_month$n_patients)
 
 #Plot of Enrollments Per Month
-ggplot(rose_analytic_df, aes(x=study_month, fill=hospital_id)) +
-  geom_bar(position = 'stack') +
-  theme_classic() +
-  scale_x_continuous(breaks=seq(min_month, max_month, by=1), limits = c(min_month, max_month),
-                     labels = site_month_labels,
-                     name = 'Month-Year') +
-  theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust = 1, size = 4.75)) +
-  scale_y_continuous(name = 'Number of Admissions') +
-  scale_fill_viridis_d()
-ggsave(paste0(site, '_enrollment_per_month.pdf'),
-       path = paste0(project_location, '/project_output_UPLOAD/graphs/'))
+# ggplot(rose_analytic_df, aes(x=study_month, fill=hospital_id)) +
+#   geom_bar(position = 'stack') +
+#   theme_classic() +
+#   scale_x_continuous(breaks=seq(min_month, max_month, by=1), limits = c(min_month, max_month),
+#                      labels = site_month_labels,
+#                      name = 'Month-Year') +
+#   theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust = 1, size = 4.75)) +
+#   scale_y_continuous(name = 'Number of Admissions') +
+#   scale_fill_viridis_d()
+# ggsave(paste0(site, '_enrollment_per_month.pdf'),
+#        path = paste0(project_location, '/project_output_UPLOAD/graphs/'))
 
 #Now Plot by sars_cov2_status
-ggplot(rose_analytic_df, aes(x=study_month, fill=factor(sars_cov2_positive))) +
-  geom_bar(position = 'stack') +
-  theme_classic() +
-  scale_x_continuous(breaks=seq(min_month, max_month, by=1), limits = c(min_month, max_month),
-                     labels = site_month_labels,
-                     name = 'Month-Year') +
-  theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust = 1, size = 4.75)) +
-  scale_y_continuous(name = 'Number of Admissions') +
-  scale_fill_viridis_d()
-ggsave('admits_by_month_by_covid.pdf',
-       path = paste0(project_location, '/project_output_UPLOAD/graphs/'))
+#ggplot(rose_analytic_df, aes(x=study_month, fill=factor(sars_cov2_positive))) +
+#  geom_bar(position = 'stack') +
+#  theme_classic() +
+#  scale_x_continuous(breaks=seq(min_month, max_month, by=1), limits = c(min_month, max_month),
+#                     labels = site_month_labels,
+#                     name = 'Month-Year') +
+#  theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust = 1, size = 4.75)) +
+#  scale_y_continuous(name = 'Number of Admissions') +
+#  scale_fill_viridis_d()
+#ggsave('admits_by_month_by_covid.pdf',
+#       path = paste0(project_location, '/project_output_UPLOAD/graphs/'))
 
 ```
 
@@ -557,7 +580,7 @@ to_tab <- c(
   'criteria',
   'deep_rass',
   'min_rass12',
-  'max_rass',
+  'max_rass12',
   'agitated_rass',
   'rr_diff_max',
   'rr_diff_max_impute',
@@ -567,17 +590,35 @@ to_tab <- c(
   'plat_max',
   'compliance_min',
   'enrollment_location_type',
-  'qualify_intermittent',
-  'qualify_continuous', 
   'code_status_presume',
   'prone_48',
   'either_dys',
   'either_dys_impute',
+  'dys_ph',
   'dys_rr',
   'dys_rr_impute',
   'dys_mv',
   'dys_mv_impute',
-  'hypoxemia_dys'
+  'hypoxemia_dys', 
+  #paralytic varibles
+   'initial_paralytic_type', 
+  'pfround_paralytic',
+  'deep_rass_paralytic',
+  'ph_bad_cat_paralytic', 
+  'min_ph_paralytic',
+  'dys_ph_paralytic', 
+  'dys_rr_paralytic', 
+  'dys_mv_paralytic', 
+  'agitated_rass_paralytic', 
+  'either_dys_paralytic', 
+  'mv_obs_max_impute_paralytic', 
+  'rr_diff_max_impute_paralytic',
+  'dys_rr_impute_paralytic',
+  'dys_mv_impute_paralytic', 
+  'agitated_rass_impute_paralytic', 
+  'either_dys_impute_paralytic', 
+  'hypoxemia_paralytic', 
+  'hypoxemia_dys_paralytic'
 )
 
 #Factor Variables
@@ -594,10 +635,9 @@ factors_tab <- c(
   'first_rose_mode',
   'criteria',
   'deep_rass',
+  'dys_ph',
   'agitated_rass',
   'enrollment_location_type',
-  'qualify_intermittent',
-  'qualify_continuous',
   'code_status_presume',
   'prone_48',
   'either_dys',
@@ -606,7 +646,21 @@ factors_tab <- c(
   'dys_rr_impute',
   'dys_mv',
   'dys_mv_impute',
-  'hypoxemia_dys'
+  'hypoxemia_dys', 
+  'initial_paralytic_type', 
+  'deep_rass_paralytic',
+  'ph_bad_cat_paralytic', 
+  'dys_ph_paralytic', 
+  'dys_rr_paralytic', 
+  'dys_mv_paralytic', 
+  'agitated_rass_paralytic', 
+  'either_dys_paralytic', 
+  'dys_rr_impute_paralytic',
+  'dys_mv_impute_paralytic', 
+  'agitated_rass_impute_paralytic', 
+  'either_dys_impute_paralytic', 
+  'hypoxemia_paralytic', 
+  'hypoxemia_dys_paralytic'
   )
 
 #First Create Table with Ranges and Additional Statistics Including Numbers of Missing and Min/Max
@@ -1179,27 +1233,92 @@ ggsave(paste0(site, '_prone_paralytics_by_quarter_48.pdf'),
 rose_analytic_df$counter<- 1
 treemap_data<- rose_analytic_df %>% group_by(either_dys_impute, hypoxemia, prone_48) %>% mutate(total=sum(counter))
 
-treemap_data<- treemap_data %>% mutate(risk_factors=case_when(prone_48==1 & hypoxemia==1 &  either_dys_impute==1 ~" Dyssychrony, Hypoxemia, Prone", prone_48==0 & hypoxemia==1 &  either_dys_impute==1 ~" Dyssychrony, Hypoxemia", prone_48==1 &   hypoxemia==0 &  either_dys_impute==1 ~" Dyssychrony, Prone",  prone_48==0 &  hypoxemia==0 &  either_dys_impute==1 ~" Dyssychrony",  prone_48==1 &   hypoxemia==1 &  either_dys_impute==0 ~"Hypoxemia, Prone",  prone_48==0 & hypoxemia==1 &  either_dys_impute==0 ~"Hypoxemia", prone_48==1 &   hypoxemia==0 &  either_dys_impute==0 ~"Prone",  prone_48==0 &  hypoxemia==0 &  either_dys_impute==0 ~"None"))
+treemap_data<- treemap_data %>% mutate(risk_factors=case_when(prone_48==1 & hypoxemia==1 &  either_dys_impute==1 ~"Increased Respiratory Effort, Hypoxemia, Prone", prone_48==0 & hypoxemia==1 &  either_dys_impute==1 ~"Increased Respiratory Effort, Hypoxemia", prone_48==1 &   hypoxemia==0 &  either_dys_impute==1 ~"Increased Respiratory Effort, Prone",  prone_48==0 &  hypoxemia==0 &  either_dys_impute==1 ~"Increased Respiratory Effort",  prone_48==1 &   hypoxemia==1 &  either_dys_impute==0 ~"Hypoxemia, Prone",  prone_48==0 & hypoxemia==1 &  either_dys_impute==0 ~"Hypoxemia", prone_48==1 &   hypoxemia==0 &  either_dys_impute==0 ~"Prone",  prone_48==0 &  hypoxemia==0 &  either_dys_impute==0 ~"None"))
 
- treemap_data<- treemap_data %>% group_by(risk_factors) %>% summarise(total=first(total))
- table(treemap_data$risk_factors, treemap_data$total, useNA = "always")
+treemap_data<- treemap_data %>% group_by(risk_factors) %>% summarise(total=first(total))
+treemap_data$cohort <- sum(treemap_data$total)
+treemap_data$prop <- treemap_data$total / treemap_data$cohort
+
+table(treemap_data$risk_factors, treemap_data$total, useNA = "always")
 treemap(treemap_data, index = c("risk_factors"), vSize = "total", type="index", palette="Blues", title="All Patients", algorithm = "squarified")
-
-write.csv(treemap_data, file=paste0(project_location, '/project_output_UPLOAD/', site, '_treemap_all.csv'))
+write.csv(treemap_data, file=paste0(project_location, '/project_output_UPLOAD/', site, '_treemap_all_at_criteria.csv'))
 
 #Among those on paralytics
 rose_analytic_df2<- rose_analytic_df %>% filter(any_paralytic_48==1)
 treemap_data2<- rose_analytic_df2 %>% group_by(either_dys_impute, hypoxemia, prone_48) %>% mutate(total=sum(counter))
 
-treemap_data2<- treemap_data2 %>% mutate(risk_factors=case_when(prone_48==1 & hypoxemia==1 &  either_dys_impute==1 ~" Dyssychrony, Hypoxemia, Prone", prone_48==0 & hypoxemia==1 &  either_dys_impute==1 ~" Dyssychrony, Hypoxemia", prone_48==1 &   hypoxemia==0 &  either_dys_impute==1 ~" Dyssychrony, Prone",  prone_48==0 &  hypoxemia==0 &  either_dys_impute==1 ~" Dyssychrony",  prone_48==1 &   hypoxemia==1 &  either_dys_impute==0 ~"Hypoxemia, Prone",  prone_48==0 & hypoxemia==1 &  either_dys_impute==0 ~"Hypoxemia", prone_48==1 &   hypoxemia==0 &  either_dys_impute==0 ~"Prone",  prone_48==0 &  hypoxemia==0 &  either_dys_impute==0 ~"None"))
+treemap_data2<- treemap_data2 %>% mutate(risk_factors=case_when(prone_48==1 & hypoxemia==1 &  either_dys_impute==1 ~"Increased Respiratory Effort, Hypoxemia, Prone", prone_48==0 & hypoxemia==1 &  either_dys_impute==1 ~"Increased Respiratory Effort, Hypoxemia", prone_48==1 &   hypoxemia==0 &  either_dys_impute==1 ~"Increased Respiratory Effort, Prone",  prone_48==0 &  hypoxemia==0 &  either_dys_impute==1 ~"Increased Respiratory Effort",  prone_48==1 &   hypoxemia==1 &  either_dys_impute==0 ~"Hypoxemia, Prone",  prone_48==0 & hypoxemia==1 &  either_dys_impute==0 ~"Hypoxemia", prone_48==1 &   hypoxemia==0 &  either_dys_impute==0 ~"Prone",  prone_48==0 &  hypoxemia==0 &  either_dys_impute==0 ~"None"))
 
 treemap_data2<- treemap_data2 %>% group_by(risk_factors) %>% summarise(total=first(total))
+treemap_data2$cohort <- sum(treemap_data2$total)
+treemap_data2$prop <- treemap_data2$total / treemap_data2$cohort
+
 table(treemap_data2$risk_factors, treemap_data2$total, useNA = "always")
 treemap(treemap_data2, index = c("risk_factors"), vSize = "total", type="index", palette="Blues", title="Patients on Paralytics", algorithm = "squarified")
-write.csv(treemap_data2, file=paste0(project_location, '/project_output_UPLOAD/', site, '_treemap_on_paralytics.csv'))
+write.csv(treemap_data2, file=paste0(project_location, '/project_output_UPLOAD/', site, '_treemap_on_paralytics_at_criteria.csv'))
+
+#Figure looking at breakdown of paralytics by hypoxemia/either_dysrony/proning, use imputed dyssynchrony measures AT TIME OF PARALYTICS Among those on paralytics
+rose_analytic_df2<- rose_analytic_df %>% filter(any_paralytic_48==1)
+treemap_data2<- rose_analytic_df2 %>% group_by(either_dys_impute_paralytic, hypoxemia_paralytic, prone_48) %>% mutate(total=sum(counter))
+
+treemap_data2<- treemap_data2 %>% mutate(risk_factors=case_when(prone_48==1 & hypoxemia_paralytic==1 &  either_dys_impute_paralytic==1 ~"Increased Respiratory Effort, Hypoxemia, Prone", prone_48==0 & hypoxemia_paralytic==1 &  either_dys_impute_paralytic==1 ~"Increased Respiratory Effort, Hypoxemia",  prone_48==0 &  hypoxemia_paralytic==0 &  either_dys_impute_paralytic==1 ~"Increased Respiratory Effort",  prone_48==1 &   hypoxemia_paralytic==1 &  either_dys_impute_paralytic==0 ~"Hypoxemia, Prone",  prone_48==0 & hypoxemia_paralytic==1 &  either_dys_impute_paralytic==0 ~"Hypoxemia", prone_48==1 &   hypoxemia_paralytic==0 &  either_dys_impute_paralytic==0 ~"Prone",  prone_48==0 &  hypoxemia_paralytic==0 &  either_dys_impute_paralytic==0 ~"None", prone_48==1 &   hypoxemia_paralytic==0 &  either_dys_impute_paralytic==1 ~"Increased Respiratory Effort, Prone"))
+
+treemap_data2<- treemap_data2 %>% group_by(risk_factors) %>% summarise(total=first(total))
+treemap_data2$cohort <- sum(treemap_data2$total)
+treemap_data2$prop <- treemap_data2$total / treemap_data2$cohort
+
+table(treemap_data2$risk_factors, treemap_data2$total, useNA = "always")
+treemap(treemap_data2, index = c("risk_factors"), vSize = "total", type="index", palette="Blues", title="Patients on Paralytics", algorithm = "squarified")
+write.csv(treemap_data2, file=paste0(project_location, '/project_output_UPLOAD/', site, '_treemap_on_paralytics_at_nmba.csv'))
 
 ```
 
+ 
+ 
+ ```{r VERSION TREEMAP WITH pH}
+# #Figure looking at breakdown of paralytics by hypoxemia/either_dysrony/proning/low pH, use imputed dyssynchrony measures
+# rose_analytic_df$counter<- 1
+# treemap_data<- rose_analytic_df %>% group_by(either_dys_impute, hypoxemia, prone_48, ph_bad_cat) %>% mutate(total=sum(counter))
+# 
+# treemap_data<- treemap_data %>% mutate(risk_factors=case_when(prone_48==1 & hypoxemia==1 &  either_dys_impute==1 ~"Increased Respiratory Effort, Hypoxemia, Prone", prone_48==0 & hypoxemia==1 &  either_dys_impute==1 ~"Increased Respiratory Effort, Hypoxemia", prone_48==1 &   hypoxemia==0 &  either_dys_impute==1 ~"Increased Respiratory Effort, Prone",  prone_48==0 &  hypoxemia==0 &  either_dys_impute==1 ~"Increased Respiratory Effort",  prone_48==1 &   hypoxemia==1 &  either_dys_impute==0 ~"Hypoxemia, Prone",  prone_48==0 & hypoxemia==1 &  either_dys_impute==0 ~"Hypoxemia", prone_48==1 &   hypoxemia==0 &  either_dys_impute==0 ~"Prone",  prone_48==0 &  hypoxemia==0 &  either_dys_impute==0 ~"None"))
+# 
+# treemap_data<- treemap_data %>% group_by(risk_factors) %>% summarise(total=first(total))
+# treemap_data$cohort <- sum(treemap_data$total)
+# treemap_data$prop <- treemap_data$total / treemap_data$cohort
+# 
+# table(treemap_data$risk_factors, treemap_data$total, useNA = "always")
+# treemap(treemap_data, index = c("risk_factors"), vSize = "total", type="index", palette="Blues", title="All Patients", algorithm = "squarified")
+# write.csv(treemap_data, file=paste0(project_location, '/project_output_UPLOAD/', site, '_treemap_all_at_criteria.csv'))
+# 
+# #Among those on paralytics
+# rose_analytic_df2<- rose_analytic_df %>% filter(any_paralytic_48==1)
+# treemap_data2<- rose_analytic_df2 %>% group_by(either_dys_impute, hypoxemia, prone_48) %>% mutate(total=sum(counter))
+# 
+# treemap_data2<- treemap_data2 %>% mutate(risk_factors=case_when(prone_48==1 & hypoxemia==1 &  either_dys_impute==1 ~"Increased Respiratory Effort, Hypoxemia, Prone", prone_48==0 & hypoxemia==1 &  either_dys_impute==1 ~"Increased Respiratory Effort, Hypoxemia", prone_48==1 &   hypoxemia==0 &  either_dys_impute==1 ~"Increased Respiratory Effort, Prone",  prone_48==0 &  hypoxemia==0 &  either_dys_impute==1 ~"Increased Respiratory Effort",  prone_48==1 &   hypoxemia==1 &  either_dys_impute==0 ~"Hypoxemia, Prone",  prone_48==0 & hypoxemia==1 &  either_dys_impute==0 ~"Hypoxemia", prone_48==1 &   hypoxemia==0 &  either_dys_impute==0 ~"Prone",  prone_48==0 &  hypoxemia==0 &  either_dys_impute==0 ~"None"))
+# 
+# treemap_data2<- treemap_data2 %>% group_by(risk_factors) %>% summarise(total=first(total))
+# treemap_data2$cohort <- sum(treemap_data2$total)
+# treemap_data2$prop <- treemap_data2$total / treemap_data2$cohort
+# 
+# table(treemap_data2$risk_factors, treemap_data2$total, useNA = "always")
+# treemap(treemap_data2, index = c("risk_factors"), vSize = "total", type="index", palette="Blues", title="Patients on Paralytics", algorithm = "squarified")
+# write.csv(treemap_data2, file=paste0(project_location, '/project_output_UPLOAD/', site, '_treemap_on_paralytics_at_criteria.csv'))
+# 
+# #Figure looking at breakdown of paralytics by hypoxemia/either_dysrony/proning, use imputed dyssynchrony measures AT TIME OF PARALYTICS Among those on paralytics
+# rose_analytic_df2<- rose_analytic_df %>% filter(any_paralytic_48==1)
+# treemap_data2<- rose_analytic_df2 %>% group_by(either_dys_impute_paralytic, hypoxemia_paralytic, prone_48) %>% mutate(total=sum(counter))
+# 
+# treemap_data2<- treemap_data2 %>% mutate(risk_factors=case_when(prone_48==1 & hypoxemia_paralytic==1 &  either_dys_impute_paralytic==1 ~"Increased Respiratory Effort, Hypoxemia, Prone", prone_48==0 & hypoxemia_paralytic==1 &  either_dys_impute_paralytic==1 ~"Increased Respiratory Effort, Hypoxemia",  prone_48==0 &  hypoxemia_paralytic==0 &  either_dys_impute_paralytic==1 ~"Increased Respiratory Effort",  prone_48==1 &   hypoxemia_paralytic==1 &  either_dys_impute_paralytic==0 ~"Hypoxemia, Prone",  prone_48==0 & hypoxemia_paralytic==1 &  either_dys_impute_paralytic==0 ~"Hypoxemia", prone_48==1 &   hypoxemia_paralytic==0 &  either_dys_impute_paralytic==0 ~"Prone",  prone_48==0 &  hypoxemia_paralytic==0 &  either_dys_impute_paralytic==0 ~"None", prone_48==1 &   hypoxemia_paralytic==0 &  either_dys_impute_paralytic==1 ~"Increased Respiratory Effort, Prone"))
+# 
+# treemap_data2<- treemap_data2 %>% group_by(risk_factors) %>% summarise(total=first(total))
+# treemap_data2$cohort <- sum(treemap_data2$total)
+# treemap_data2$prop <- treemap_data2$total / treemap_data2$cohort
+# 
+# table(treemap_data2$risk_factors, treemap_data2$total, useNA = "always")
+# treemap(treemap_data2, index = c("risk_factors"), vSize = "total", type="index", palette="Blues", title="Patients on Paralytics", algorithm = "squarified")
+# write.csv(treemap_data2, file=paste0(project_location, '/project_output_UPLOAD/', site, '_treemap_on_paralytics_at_nmba.csv'))
+
+```
 
 ```{r Paralytics and Patient Outcomes in Table Form}
 to_tab <- c(
@@ -1347,7 +1466,6 @@ rose_analytic_df$race_ethnicity <- factor(rose_analytic_df$race_ethnicity, order
 rose_analytic_df$race_ethnicity <- relevel(rose_analytic_df$race_ethnicity, ref = "White, non-Hispanic")
 
 rose_analytic_df$first_rose_mode <- factor(rose_analytic_df$first_rose_mode, ordered = FALSE)
-rose_analytic_df$first_rose_mode <- relevel(rose_analytic_df$first_rose_mode, ref = "Pressure-Regulated Volume Control")
 
 rose_analytic_df$enrollment_location_type <- factor(rose_analytic_df$enrollment_location_type, ordered = FALSE)
 rose_analytic_df$enrollment_location_type <- relevel(rose_analytic_df$enrollment_location_type, ref = "medical_icu")
@@ -1390,8 +1508,8 @@ min_ph_plot<- rose_analytic_df %>% group_by(min_ph) %>% summarise(total = n(), y
 write.csv(min_ph_plot, paste0(project_location, '/project_output_UPLOAD/', site, '_min_ph_plot_all.csv'))
 
 #group by max_rass and count up how many on paralytics
-max_rass_plot<- rose_analytic_df %>% group_by(max_rass) %>% summarise(total = n(), yes_count=sum(any_paralytic_48), no_count=total-yes_count, percent_yes=100 * yes_count/total)
-#ggplot(max_rass_plot, aes(x= max_rass, y = percent_yes)) + geom_point() + theme_classic()
+max_rass_plot<- rose_analytic_df %>% group_by(max_rass12) %>% summarise(total = n(), yes_count=sum(any_paralytic_48), no_count=total-yes_count, percent_yes=100 * yes_count/total)
+#ggplot(max_rass_plot, aes(x= max_rass12, y = percent_yes)) + geom_point() + theme_classic()
 write.csv(max_rass_plot, paste0(project_location, '/project_output_UPLOAD/', site, '_max_rass_plot_all.csv'))
 
 #group by min_rass and count up how many on paralytics
@@ -1442,7 +1560,7 @@ min_ph_plot<- proned_cohort %>% group_by(min_ph) %>% summarise(total = n(), yes_
 #write.csv(min_ph_plot, paste0(project_location, '/project_output_UPLOAD/', site, '_min_ph_plot_proned.csv'))
 
 #group by max_rass and count up how many on paralytics
-max_rass_plot<- proned_cohort %>% group_by(max_rass) %>% summarise(total = n(), yes_count=sum(any_paralytic_48), no_count=total-yes_count, percent_yes=100 * yes_count/total)
+max_rass_plot<- proned_cohort %>% group_by(max_rass12) %>% summarise(total = n(), yes_count=sum(any_paralytic_48), no_count=total-yes_count, percent_yes=100 * yes_count/total)
 #ggplot(max_rass_plot, aes(x= max_rass, y = percent_yes)) + geom_point() + theme_classic()
 #write.csv(max_rass_plot, paste0(project_location, '/project_output_UPLOAD/', site, '_max_rass_plot_proned.csv'))
 
@@ -1491,7 +1609,7 @@ min_ph_plot<- unproned_cohort %>% group_by(min_ph) %>% summarise(total = n(), ye
 write.csv(min_ph_plot, paste0(project_location, '/project_output_UPLOAD/', site, '_min_ph_plot_unproned.csv'))
 
 #group by max_rass and count up how many on paralytics
-max_rass_plot<- unproned_cohort %>% group_by(max_rass) %>% summarise(total = n(), yes_count=sum(any_paralytic_48), no_count=total-yes_count, percent_yes=100 * yes_count/total)
+max_rass_plot<- unproned_cohort %>% group_by(max_rass12) %>% summarise(total = n(), yes_count=sum(any_paralytic_48), no_count=total-yes_count, percent_yes=100 * yes_count/total)
 #ggplot(max_rass_plot, aes(x= max_rass, y = percent_yes)) + geom_point() + theme_classic()
 write.csv(max_rass_plot, paste0(project_location, '/project_output_UPLOAD/', site, '_max_rass_plot_unproned.csv'))
 
@@ -1599,10 +1717,10 @@ rr_diff_summary <- model_summary_table(main_mod)
 
 # rass/agitation
 if (n_hospitals>1) {
-model_form_step <- any_paralytic_48 ~ factor(hospital_id) + max_rass 
+model_form_step <- any_paralytic_48 ~ factor(hospital_id) + max_rass12 
 main_mod <- glm(model_form_step, data = rose_analytic_df, family=binomial)
 } else {
-model_form_step <- any_paralytic_48 ~ max_rass 
+model_form_step <- any_paralytic_48 ~ max_rass12 
 main_mod <- glm(model_form_step, data = rose_analytic_df, family=binomial, na.action = na.omit)
 }
 
@@ -1731,10 +1849,10 @@ rr_diff_summary_unproned <- model_summary_table(main_mod)
 
 # rass/agitation
 if (n_hospitals>1) {
-model_form_step <- any_paralytic_48 ~ factor(hospital_id) + max_rass 
+model_form_step <- any_paralytic_48 ~ factor(hospital_id) + max_rass12 
 main_mod <- glm(model_form_step, data = unproned_cohort, family=binomial)
 } else {
-model_form_step <- any_paralytic_48 ~ max_rass 
+model_form_step <- any_paralytic_48 ~ max_rass12 
 main_mod <- glm(model_form_step, data = unproned_cohort, family=binomial, na.action = na.omit)
 }
 
@@ -1862,12 +1980,12 @@ write.csv(main_table, paste0(project_location, '/project_output_UPLOAD/', site, 
 ```{r}
 #Main Model: first look at primary outcome, identifying predictors of paralytics within 48 hours, including estimated compliance and plateau pressure 
 if (n_hospitals>1) {
-model_form_step <- any_paralytic_48 ~ factor(hospital_id) + study_period + bmi_scale + age_scale + sofa_score_scale + race_ethnicity + or_before_enrollment + first_rose_fio2_scale + first_rose_peep_scale + first_rose_mode + criteria + first_rose_pf_all_scale + nee_pressor_dose + ett_to_enrolled + female  + enrollment_location_type  + deep_rass + rr_diff_max_scale + covid_positive + tv_cc_kg_scale  + mv_obs_max_scale  + plat_max_scale + compliance_scale
+model_form_step <- any_paralytic_48 ~ factor(hospital_id) + study_period + bmi_scale + age_scale + sofa_score_scale + race_ethnicity + or_before_enrollment + first_rose_fio2_scale + first_rose_peep_scale +  criteria + first_rose_pf_all_scale + nee_pressor_dose + ett_to_enrolled + female  + enrollment_location_type  + deep_rass + rr_diff_max_scale + covid_positive + tv_cc_kg_scale  + mv_obs_max_scale  + plat_max_scale + compliance_scale
 main_mod <- glm(model_form_step,
           data = rose_analytic_df, 
           family=binomial)
 } else {
-model_form_step <- any_paralytic_48 ~ study_period + bmi_scale + age_scale + sofa_score_scale + race_ethnicity + or_before_enrollment + first_rose_fio2_scale + first_rose_peep_scale + first_rose_mode + criteria + first_rose_pf_all_scale + nee_pressor_dose + ett_to_enrolled + female  + enrollment_location_type  + deep_rass + rr_diff_max_scale + covid_positive + tv_cc_kg_scale  + mv_obs_max_scale  + plat_max_scale + compliance_scale
+model_form_step <- any_paralytic_48 ~ study_period + bmi_scale + age_scale + sofa_score_scale + race_ethnicity + or_before_enrollment + first_rose_fio2_scale + first_rose_peep_scale +  criteria + first_rose_pf_all_scale + nee_pressor_dose + ett_to_enrolled + female  + enrollment_location_type  + deep_rass + rr_diff_max_scale + covid_positive + tv_cc_kg_scale  + mv_obs_max_scale  + plat_max_scale + compliance_scale
 main_mod <- glm(model_form_step,
           data = rose_analytic_df, 
           family=binomial, na.action = na.omit)
@@ -1878,12 +1996,12 @@ main_mod_summary <- model_summary_table(main_mod)
 
 # Add in proning
 if (n_hospitals>1) {
-model_form_step <- any_paralytic_48 ~ factor(hospital_id) + study_period + bmi_scale + age_scale + sofa_score_scale + race_ethnicity + or_before_enrollment + first_rose_fio2_scale + first_rose_peep_scale + first_rose_mode + criteria + first_rose_pf_all_scale + nee_pressor_dose + ett_to_enrolled + female  + enrollment_location_type  + deep_rass + rr_diff_max_scale + covid_positive + tv_cc_kg_scale  + mv_obs_max_scale  + plat_max_scale + compliance_scale + prone_48
+model_form_step <- any_paralytic_48 ~ factor(hospital_id) + study_period + bmi_scale + age_scale + sofa_score_scale + race_ethnicity + or_before_enrollment + first_rose_fio2_scale + first_rose_peep_scale + criteria + first_rose_pf_all_scale + nee_pressor_dose + ett_to_enrolled + female  + enrollment_location_type  + deep_rass + rr_diff_max_scale + covid_positive + tv_cc_kg_scale  + mv_obs_max_scale  + plat_max_scale + compliance_scale + prone_48
 main_mod <- glm(model_form_step,
           data = rose_analytic_df, 
           family=binomial)
 } else {
-model_form_step <- any_paralytic_48 ~ study_period + bmi_scale + age_scale + sofa_score_scale + race_ethnicity + or_before_enrollment + first_rose_fio2_scale + first_rose_peep_scale + first_rose_mode + criteria + first_rose_pf_all_scale + nee_pressor_dose + ett_to_enrolled + female  + enrollment_location_type  + deep_rass + rr_diff_max_scale + covid_positive + tv_cc_kg_scale  + mv_obs_max_scale  + plat_max_scale + compliance_scale + prone_48
+model_form_step <- any_paralytic_48 ~ study_period + bmi_scale + age_scale + sofa_score_scale + race_ethnicity + or_before_enrollment + first_rose_fio2_scale + first_rose_peep_scale + criteria + first_rose_pf_all_scale + nee_pressor_dose + ett_to_enrolled + female  + enrollment_location_type  + deep_rass + rr_diff_max_scale + covid_positive + tv_cc_kg_scale  + mv_obs_max_scale  + plat_max_scale + compliance_scale + prone_48
 main_mod <- glm(model_form_step,
           data = rose_analytic_df, 
           family=binomial, na.action = na.omit)
@@ -1895,12 +2013,12 @@ main_mod_proning_summary <- model_summary_table(main_mod)
 #Next look at SA; 
 #Model SA1: look at paralytics within first IMV episode (not just 48h), including compliance and plateau pressure 
 if (n_hospitals>1) {
-model_form_step <- any_paralytic_ever ~ factor(hospital_id) + study_period + bmi_scale + age_scale + sofa_score_scale + race_ethnicity + or_before_enrollment + first_rose_fio2_scale + first_rose_peep_scale + first_rose_mode + criteria + first_rose_pf_all_scale + nee_pressor_dose + ett_to_enrolled + female  + enrollment_location_type  + deep_rass + rr_diff_max_scale + covid_positive + tv_cc_kg_scale  + mv_obs_max_scale  + plat_max_scale + compliance_scale
+model_form_step <- any_paralytic_ever ~ factor(hospital_id) + study_period + bmi_scale + age_scale + sofa_score_scale + race_ethnicity + or_before_enrollment + first_rose_fio2_scale + first_rose_peep_scale + criteria + first_rose_pf_all_scale + nee_pressor_dose + ett_to_enrolled + female  + enrollment_location_type  + deep_rass + rr_diff_max_scale + covid_positive + tv_cc_kg_scale  + mv_obs_max_scale  + plat_max_scale + compliance_scale
 main_mod_sa1 <- glm(model_form_step,
           data = rose_analytic_df, 
           family=binomial)
 } else {
-model_form_step <- any_paralytic_ever ~ study_period + bmi_scale + age_scale + sofa_score_scale + race_ethnicity + or_before_enrollment + first_rose_fio2_scale + first_rose_peep_scale + first_rose_mode + criteria + first_rose_pf_all_scale + nee_pressor_dose + ett_to_enrolled + female  + enrollment_location_type  + deep_rass + rr_diff_max_scale + covid_positive + tv_cc_kg_scale  + mv_obs_max_scale  + plat_max_scale + compliance_scale
+model_form_step <- any_paralytic_ever ~ study_period + bmi_scale + age_scale + sofa_score_scale + race_ethnicity + or_before_enrollment + first_rose_fio2_scale + first_rose_peep_scale + criteria + first_rose_pf_all_scale + nee_pressor_dose + ett_to_enrolled + female  + enrollment_location_type  + deep_rass + rr_diff_max_scale + covid_positive + tv_cc_kg_scale  + mv_obs_max_scale  + plat_max_scale + compliance_scale
 main_mod_sa1 <- glm(model_form_step,
           data = rose_analytic_df, 
           family=binomial, na.action = na.omit)
@@ -1911,12 +2029,12 @@ main_mod_summary_sa1 <- model_summary_table(main_mod_sa1)
 
 #Model SA2: look at paralytics within first 48h, excluding estimated compliance and plateau pressure - use true values from observed plateau pressure
 if (n_hospitals>1) {
-model_form_step <- any_paralytic_48 ~ factor(hospital_id) + study_period + bmi_scale + age_scale + sofa_score_scale + race_ethnicity + or_before_enrollment + first_rose_fio2_scale + first_rose_peep_scale + first_rose_mode + criteria + first_rose_pf_all_scale + nee_pressor_dose + ett_to_enrolled + female  + enrollment_location_type  + deep_rass + rr_diff_max_scale + covid_positive + tv_cc_kg_scale  + mv_obs_max_scale  + plat_max_scale_obs + compliance_scale_obs
+model_form_step <- any_paralytic_48 ~ factor(hospital_id) + study_period + bmi_scale + age_scale + sofa_score_scale + race_ethnicity + or_before_enrollment + first_rose_fio2_scale + first_rose_peep_scale + criteria + first_rose_pf_all_scale + nee_pressor_dose + ett_to_enrolled + female  + enrollment_location_type  + deep_rass + rr_diff_max_scale + covid_positive + tv_cc_kg_scale  + mv_obs_max_scale  + plat_max_scale_obs + compliance_scale_obs
 main_mod_sa2 <- glm(model_form_step,
           data = rose_analytic_df, 
           family=binomial)
 } else {
-model_form_step <- any_paralytic_48 ~ study_period + bmi_scale + age_scale + sofa_score_scale + race_ethnicity + or_before_enrollment + first_rose_fio2_scale + first_rose_peep_scale + first_rose_mode + criteria + first_rose_pf_all_scale + nee_pressor_dose + ett_to_enrolled + female  + enrollment_location_type  + deep_rass + rr_diff_max_scale + covid_positive + tv_cc_kg_scale  + mv_obs_max_scale  + plat_max_scale_obs + compliance_scale_obs
+model_form_step <- any_paralytic_48 ~ study_period + bmi_scale + age_scale + sofa_score_scale + race_ethnicity + or_before_enrollment + first_rose_fio2_scale + first_rose_peep_scale + criteria + first_rose_pf_all_scale + nee_pressor_dose + ett_to_enrolled + female  + enrollment_location_type  + deep_rass + rr_diff_max_scale + covid_positive + tv_cc_kg_scale  + mv_obs_max_scale  + plat_max_scale_obs + compliance_scale_obs
 main_mod_sa2 <- glm(model_form_step,
           data = rose_analytic_df, 
           family=binomial, na.action = na.omit)
@@ -1927,12 +2045,12 @@ main_mod_summary_sa2 <- model_summary_table(main_mod_sa2)
 
 #SA3: Subset of Severe ARDS; Identifying predictors of paralytics within 48 hours, including estimated compliance and plateau pressure, in patients with p/f<100
 if (n_hospitals>1) {
-model_form_step <- any_paralytic_48 ~ factor(hospital_id) + study_period + bmi_scale + age_scale + sofa_score_scale + race_ethnicity + or_before_enrollment + first_rose_fio2_scale + first_rose_peep_scale + first_rose_mode + criteria + first_rose_pf_all_scale + nee_pressor_dose + ett_to_enrolled + female  + enrollment_location_type  + deep_rass + rr_diff_max_scale + covid_positive + tv_cc_kg_scale  + mv_obs_max_scale  + plat_max_scale + compliance_scale
+model_form_step <- any_paralytic_48 ~ factor(hospital_id) + study_period + bmi_scale + age_scale + sofa_score_scale + race_ethnicity + or_before_enrollment + first_rose_fio2_scale + first_rose_peep_scale +  criteria + first_rose_pf_all_scale + nee_pressor_dose + ett_to_enrolled + female  + enrollment_location_type  + deep_rass + rr_diff_max_scale + covid_positive + tv_cc_kg_scale  + mv_obs_max_scale  + plat_max_scale + compliance_scale
 main_mod_severe <- glm(model_form_step,
           data = subset(rose_analytic_df, severe_ards==1), 
           family=binomial)
 } else {
-model_form_step <- any_paralytic_48 ~ study_period + bmi_scale + age_scale + sofa_score_scale + race_ethnicity + or_before_enrollment + first_rose_fio2_scale + first_rose_peep_scale + first_rose_mode + criteria + first_rose_pf_all_scale + nee_pressor_dose + ett_to_enrolled + female  + enrollment_location_type  + deep_rass + rr_diff_max_scale + covid_positive + tv_cc_kg_scale  + mv_obs_max_scale  + plat_max_scale + compliance_scale
+model_form_step <- any_paralytic_48 ~ study_period + bmi_scale + age_scale + sofa_score_scale + race_ethnicity + or_before_enrollment + first_rose_fio2_scale + first_rose_peep_scale + criteria + first_rose_pf_all_scale + nee_pressor_dose + ett_to_enrolled + female  + enrollment_location_type  + deep_rass + rr_diff_max_scale + covid_positive + tv_cc_kg_scale  + mv_obs_max_scale  + plat_max_scale + compliance_scale
 main_mod_severe <- glm(model_form_step,
           data = subset(rose_analytic_df, severe_ards==1), 
           family=binomial, na.action = na.omit)
@@ -1943,12 +2061,12 @@ main_mod_summary_sa3 <- model_summary_table(main_mod_severe)
 
 #SA4: Subset of patients IMV 2022-2024; Identifying predictors of paralytics within 48 hours, including estimated compliance and plateau pressure
 if (n_hospitals>1) {
-model_form_step <- any_paralytic_48 ~ factor(hospital_id) + bmi_scale + age_scale + sofa_score_scale + race_ethnicity + or_before_enrollment + first_rose_fio2_scale + first_rose_peep_scale + first_rose_mode + criteria + first_rose_pf_all_scale + nee_pressor_dose + ett_to_enrolled + female  + enrollment_location_type  + deep_rass + rr_diff_max_scale + covid_positive + tv_cc_kg_scale  + mv_obs_max_scale  + plat_max_scale + compliance_scale
+model_form_step <- any_paralytic_48 ~ factor(hospital_id) + bmi_scale + age_scale + sofa_score_scale + race_ethnicity + or_before_enrollment + first_rose_fio2_scale + first_rose_peep_scale +  criteria + first_rose_pf_all_scale + nee_pressor_dose + ett_to_enrolled + female  + enrollment_location_type  + deep_rass + rr_diff_max_scale + covid_positive + tv_cc_kg_scale  + mv_obs_max_scale  + plat_max_scale + compliance_scale
 main_mod_current <- glm(model_form_step,
           data = subset(rose_analytic_df, t_rose_first>=as.POSIXct("2022-01-01", tz=site_time_zone)), 
           family=binomial)
 } else {
-model_form_step <- any_paralytic_48 ~ bmi_scale + age_scale + sofa_score_scale + race_ethnicity + or_before_enrollment + first_rose_fio2_scale + first_rose_peep_scale + first_rose_mode + criteria + first_rose_pf_all_scale + nee_pressor_dose + ett_to_enrolled + female  + enrollment_location_type  + deep_rass + rr_diff_max_scale + covid_positive + tv_cc_kg_scale  + mv_obs_max_scale  + plat_max_scale + compliance_scale
+model_form_step <- any_paralytic_48 ~ bmi_scale + age_scale + sofa_score_scale + race_ethnicity + or_before_enrollment + first_rose_fio2_scale + first_rose_peep_scale +  criteria + first_rose_pf_all_scale + nee_pressor_dose + ett_to_enrolled + female  + enrollment_location_type  + deep_rass + rr_diff_max_scale + covid_positive + tv_cc_kg_scale  + mv_obs_max_scale  + plat_max_scale + compliance_scale
 main_mod_current <- glm(model_form_step,
           data = subset(rose_analytic_df, t_rose_first>=as.POSIXct("2022-01-01", tz=site_time_zone)), 
           family=binomial, na.action = na.omit)
@@ -1959,12 +2077,12 @@ main_mod_summary_sa4 <- model_summary_table(main_mod_current)
 
 #SA5: Subset of patients who are okay with reintubation (exclude DNAR/DNI and DNI)
 if (n_hospitals>1) {
-model_form_step <- any_paralytic_48 ~ factor(hospital_id) + bmi_scale + age_scale + sofa_score_scale + race_ethnicity + or_before_enrollment + first_rose_fio2_scale + first_rose_peep_scale + first_rose_mode + criteria + first_rose_pf_all_scale + nee_pressor_dose + ett_to_enrolled + female  + enrollment_location_type  + deep_rass + rr_diff_max_scale + covid_positive + tv_cc_kg_scale  + mv_obs_max_scale  + plat_max_scale + compliance_scale
+model_form_step <- any_paralytic_48 ~ factor(hospital_id) + bmi_scale + age_scale + sofa_score_scale + race_ethnicity + or_before_enrollment + first_rose_fio2_scale + first_rose_peep_scale +  criteria + first_rose_pf_all_scale + nee_pressor_dose + ett_to_enrolled + female  + enrollment_location_type  + deep_rass + rr_diff_max_scale + covid_positive + tv_cc_kg_scale  + mv_obs_max_scale  + plat_max_scale + compliance_scale
 main_mod_ett <- glm(model_form_step,
           data = subset(rose_analytic_df, code_status_presume!="No resuscitation, no intubation" & code_status_presume !="Okay with resuscitation, except no intubation"), 
           family=binomial)
 } else {
-model_form_step <- any_paralytic_48 ~ bmi_scale + age_scale + sofa_score_scale + race_ethnicity + or_before_enrollment + first_rose_fio2_scale + first_rose_peep_scale + first_rose_mode + criteria + first_rose_pf_all_scale + nee_pressor_dose + ett_to_enrolled + female  + enrollment_location_type  + deep_rass + rr_diff_max_scale + covid_positive + tv_cc_kg_scale  + mv_obs_max_scale  + plat_max_scale + compliance_scale
+model_form_step <- any_paralytic_48 ~ bmi_scale + age_scale + sofa_score_scale + race_ethnicity + or_before_enrollment + first_rose_fio2_scale + first_rose_peep_scale + criteria + first_rose_pf_all_scale + nee_pressor_dose + ett_to_enrolled + female  + enrollment_location_type  + deep_rass + rr_diff_max_scale + covid_positive + tv_cc_kg_scale  + mv_obs_max_scale  + plat_max_scale + compliance_scale
 main_mod_ett <- glm(model_form_step,
           data = subset(rose_analytic_df, code_status_presume!="No resuscitation, no intubation" & code_status_presume !="Okay with resuscitation, except no intubation"), 
           family=binomial, na.action = na.omit)
@@ -2057,9 +2175,9 @@ mortality_multivariate_la <- model_summary_table(main_mod)
 
 
 
-```{r Descriptive data for paralytic use continuous/not among patients who meet ROSE criteria}
+```{r Descriptive data for paralytic use continuous/not among ALL patients who meet ROSE criteria}
 
-current_rose <- rose_analytic_df #|>
+current_rose <- rose_analytic_df# |>
 #  filter(t_rose_first>=as.POSIXct("2022-03-01", tz=site_time_zone))
 
 #Look at use of continuous vs intermittent pushes, and how many intermittent pushes
@@ -2067,7 +2185,7 @@ total_possible<- nrow(current_rose)
 
 #continuous
 continuous<- current_rose |>
-  filter(any_continuous=="continuous") |>
+  filter(any_paralytic_48==1) |>
   mutate(ett_to_paralytic_c_all=as.numeric(ett_to_paralytic_c_all)/60/60/24, 
          any_proning=fifelse(!is.na(prone_episodes), 1, 0))
   
@@ -2113,7 +2231,7 @@ rm(tab2_excel)
 
 #intermittent
 intermittent<- current_rose |>
-  filter(any_intermittent=="intermittent") |>
+  filter(intermittent_para48>2) |>
     mutate(ett_to_paralytic_i_all=as.numeric(ett_to_paralytic_i_all)/60/60/24, 
          any_proning=fifelse(!is.na(prone_episodes), 1, 0))
 
@@ -2159,6 +2277,108 @@ rm(tab2_excel)
 
 ```
 
+
+```{r Descriptive data for paralytic use continuous/not among patients who meet ROSE criteria}
+
+current_rose <- rose_analytic_df |>
+  filter(t_rose_first>=as.POSIXct("2022-03-01", tz=site_time_zone))
+
+#Look at use of continuous vs intermittent pushes, and how many intermittent pushes
+total_possible<- nrow(current_rose)
+
+#continuous
+continuous<- current_rose |>
+  filter(any_paralytic_48==1) |>
+  mutate(ett_to_paralytic_c_all=as.numeric(ett_to_paralytic_c_all)/60/60/24, 
+         any_proning=fifelse(!is.na(prone_episodes), 1, 0))
+  
+to_tab <- c(
+  'continous_paralytic_given',
+  'compliance_estimate_min',
+  'compliance_min',
+  'ett_to_paralytic_c_all',
+  'any_proning',
+  'ratio_at_paralytics_c_all', 
+  'age_at_admission',
+  'bmi',
+  'hospital_id',
+  'sars_cov2_positive',
+  'sofa_score',
+  'nee_pressor_dose',
+  'rr_diff_max',
+  'mv_obs_max',
+  'plat_max',
+  'enrollment_location_type')
+
+#Factor Variables
+factors_tab <- c(
+  'continous_paralytic_given',
+  'any_proning', 
+  'hospital_id',
+  'sars_cov2_positive',
+  'nee_pressor_dose',
+  'enrollment_location_type'
+)
+
+
+tab2_continuous <- CreateTableOne(vars = to_tab, data=continuous, factorVars = factors_tab)
+summary(tab2_continuous) 
+
+tab2_excel <- as.data.frame(print(tab2_continuous, printToggle = FALSE, missing = TRUE)) |>
+  mutate(site = site) |>
+  relocate(site, .before = Overall) |>
+  rownames_to_column('characteristic') |>
+  rename(percent_missing = Missing)
+write.csv(tab2_excel, file=paste0(project_location, '/project_output_UPLOAD/', site, '_Table_paralytics_continuous_rose_current.csv'))
+rm(tab2_excel)
+
+#intermittent
+intermittent<- current_rose |>
+  filter(intermittent_para48>2) |>
+    mutate(ett_to_paralytic_i_all=as.numeric(ett_to_paralytic_i_all)/60/60/24, 
+         any_proning=fifelse(!is.na(prone_episodes), 1, 0))
+
+to_tab <- c(
+  'intermittent_paralytic_given',
+  'compliance_estimate_min',
+  'compliance_min',
+  'ett_to_paralytic_i_all',
+  'any_proning', 
+  'intermittent_para_all', 
+  'ratio_at_paralytics_i_all', 
+  'age_at_admission',
+  'bmi',
+  'hospital_id',
+  'sars_cov2_positive',
+  'sofa_score',
+  'nee_pressor_dose',
+  'rr_diff_max',
+  'mv_obs_max',
+  'plat_max',
+  'enrollment_location_type')
+
+#Factor Variables
+factors_tab <- c(
+  'intermittent_paralytic_given',
+  'any_proning', 
+  'hospital_id',
+  'sars_cov2_positive',
+  'nee_pressor_dose',
+  'enrollment_location_type'
+)
+
+tab2_intermittent <- CreateTableOne(vars = to_tab, data=intermittent, factorVars = factors_tab)
+summary(tab2_intermittent) 
+
+tab2_excel <- as.data.frame(print(tab2_intermittent, printToggle = FALSE, missing = TRUE)) |>
+  mutate(site = site) |>
+  relocate(site, .before = Overall) |>
+  rownames_to_column('characteristic') |>
+  rename(percent_missing = Missing)
+write.csv(tab2_excel, file=paste0(project_location, '/project_output_UPLOAD/', site, '_Table_paralytics_intermittent_rose_current.csv'))
+rm(tab2_excel)
+
+```
 
 ```{r Descriptive data for paralytic use in past 3 years, post-COVID all patients regardless of whether meet ROSE criteria}
 
