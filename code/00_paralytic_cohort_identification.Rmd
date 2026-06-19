@@ -37,6 +37,15 @@ rm(packages, install_if_missing)
 #Use Dplyr select as default
 select <- dplyr::select
 
+# Helper to remove objects only if they exist, then run garbage collection
+cleanup <- function(...) {
+  objs <- as.character(substitute(list(...)))[-1]
+  objs <- objs[objs %in% ls(envir = parent.frame())]
+  if (length(objs) > 0) {
+    rm(list = objs, envir = parent.frame())
+  }
+  invisible(gc())
+}
 
 { # Load config to specify local paths
     cat("Load config to specify local paths\n")
@@ -53,7 +62,7 @@ select <- dplyr::select
     site_time_zone <- config$time_zone
     file_type <- config$file_type
   
-    rm(config)
+    cleanup(config)
   } 
 
 
@@ -81,7 +90,7 @@ check_timezone <- function(site_timezone, intended_timezone = Sys.timezone()) {
 #Time Zone Check
 result <- check_timezone(site_time_zone)
 
-
+cleanup(result)
 #Create Sub Folders within Project Folder
 # Check if the output directory exists; if not, create it
 if (!dir.exists(paste0(project_location, "/project_tables_DO_NOT_UPLOAD"))) {
@@ -203,6 +212,25 @@ for (tbl in required_files) {
     assign(tbl, x)
   }
 }
+
+cleanup(
+  tables,
+  true_tables,
+  table_flags,
+  clif_table_filenames,
+  clif_table_basenames,
+  required_files,
+  missing_tables,
+  required_filenames,
+  data_list,
+  i,
+  object_name,
+  id_cols,
+  tbl,
+  x,
+  col,
+  cols_to_cast
+)
 ```
 
 #Now Ready to Identify Cohort
@@ -233,7 +261,7 @@ clif_hospitalization <- clif_hospitalization |>
   collect() |> #Have to Bring in to Environment To Correctly Filter IDs (at JHH)
   filter(hospitalization_id %in% inpatient_hospitalization_ids$hospitalization_id) |>
   as_arrow_table() #Put Back to Arrow Table
-rm(inpatient_hospitalization_ids)
+cleanup(inpatient_hospitalization_ids)
 
 #Create an Hospital Block ID - This is to Identify Continuous Hospitalizations When Patients Are Transferred Between Hospitals in One Health System
 #This code is intended be robust to various ways encounters may be coded in CLIF databases
@@ -276,7 +304,7 @@ linked_encounters <- as_tibble(left_join(linked_encounters, temp, join_by(hospit
   mutate(link_number=row_number()) |>
   ungroup() |>
   select(hospitalization_id, linked, link_number)
-rm(temp)
+cleanup(temp)
 
 #Now Join Back to Hospitalization Table
 clif_hospitalization <- clif_hospitalization |>
@@ -323,12 +351,14 @@ clif_hospitalization <- clif_hospitalization |>
   relocate(encounter_block, .after = 'hospitalization_id') |>
   as_arrow_table()
 
-rm(linked_encounters, df_link, hospital_blocks)
+cleanup(linked_encounters, df_link, hospital_blocks)
 
 #Keep Track for Consort Diagram
 patients <- length(unique(clif_hospitalization$patient_id))
 encounters <- length(clif_hospitalization$hospitalization_id)
 cat('\n In', site, 'CLIF data there are', patients,'unique patients with', encounters, 'encounters \n')
+
+cleanup(patients, encounters)
 ```
 
 #Filter Only to Patients Who Receive Mechanical Ventilation
@@ -346,7 +376,7 @@ vent <- clif_respiratory_support |>
   #Will Also Merge in Encounter Block Here - Will Allow Us to Keep Track of LInked Encounters
   left_join(temp_ids) |>
   compute()
-rm(temp_ids)
+cleanup(temp_ids)
 
 #Identify Those Who Have Ever Been on a Vent During an Encounter Block
 vent <- vent |> 
@@ -494,7 +524,7 @@ device_transitions <- device_transitions |>
   )) |>
   fill(liberation, .direction = 'up') |>
   ungroup()
-rm(dc_time)
+cleanup(dc_time)
 
 #Renumber 'New' Episodes of MV, that is if the first episode, and then episodes in which the patient was previously liberated, keep the intervening episodes so we can count final duration
 vent_episodes <- device_transitions |>
@@ -538,7 +568,7 @@ vent_eligible <- vent_episodes |>
 #Describe Numbers
 cat(site, '\n After filtering to patients with >0 hours of MV for First Episode there are,', dim(vent_eligible)[1], 'ventilator episodes among,',length(unique(vent_eligible$hospitalization_id)), 'hospitalizations from',length(unique(vent_eligible$patient_id)), 'patients.')
 
-rm(device_transitions)
+cleanup(device_transitions, vent, vent_episodes, patients, encounters)
 ```
 #EXCLUSIONS (Overall and ROSE cohort):
 -Tracheostomy prior to completing first 24 hours of first vent (includes tracheostomy on admission). 
@@ -557,7 +587,7 @@ cohort_ids <- clif_hospitalization |>
   filter(in_cohort==1) |>
   select(patient_id, hospitalization_id, encounter_block, in_cohort) |>
   collect()
-rm(temp_ids)
+cleanup(temp_ids)
 
 #Tracheostomy in First 24 Hours of First Vent 
 trach <- clif_respiratory_support |>
@@ -590,7 +620,7 @@ cat('\n At', site,',', length(unique(vent_eligible$hospitalization_id[vent_eligi
 #Vent Eligible Excluding Early Trach
 vent_eligible <- vent_eligible |>
   filter(trach_within_24!=1)
-#rm(trach)
+#cleanup(trach)
 #Update Cohort_IDs
 #List of patient_id, encounter_block, hospitalization_id and vent_start
 temp_ids <- vent_eligible |>
@@ -603,7 +633,7 @@ cohort_ids <- clif_hospitalization |>
   filter(in_cohort==1) |>
   select(patient_id, hospitalization_id, encounter_block, in_cohort) |>
   collect()
-rm(temp_ids)
+cleanup(temp_ids)
 
 #How Many Patients Arrive First to ICU and First Device is a Vent?
 #First Define What the First Location Is
@@ -642,7 +672,7 @@ osh_transfer <- osh_transfer |>
 #Merge Into Vent Eligible
 vent_eligible <- vent_eligible |>
   left_join(osh_transfer, join_by(patient_id, encounter_block)) 
-rm(osh_transfer, first_device)
+cleanup(osh_transfer, first_device)
 
 #Describe for Consort
 cat('\n At', site,',', length(unique(vent_eligible$hospitalization_id[vent_eligible$transfer_on_vent==1])), 'patient hospitalizations were from patients who met criteria for having been transfered while on a ventilator and are thus excluded,') 
@@ -665,7 +695,7 @@ cohort_ids <- clif_hospitalization |>
   filter(in_cohort==1) |>
   select(patient_id, hospitalization_id, encounter_block, in_cohort) |>
   collect()
-rm(temp_ids)
+cleanup(temp_ids)
 ```
 
 ```{r Clean CLIF Labs Data for PaO2 and Merge with Respiratory Support for P/F Ratios}
@@ -771,6 +801,8 @@ vent_data <- vent_data |>
   arrange(patient_id, encounter_block, recorded_dttm) |>  #spo2 conversion only between 80-96 per rose protocol
   mutate(pao2_i= case_when(spo2== 96~82, spo2==95~76, spo2==94~71, spo2==93~67, spo2==92~64, spo2==91~61, spo2==90~59, spo2==89~57, spo2==88~55, spo2==87~53, spo2==86~51, spo2==85~50, spo2==84~49, spo2==83~47, spo2==82~46, spo2==81~45, spo2==80~44)) |>
   ungroup() 
+
+cleanup(pao2, pao2_i, fio2_mean)
 
 #Quality Check FiO2 and PEEP Data
 #Calculate PF
@@ -979,6 +1011,9 @@ rose_criteria <- rose_windowed |>
     by = c("patient_id", "encounter_block", "hospitalization_id")
   )
 
+cleanup(rose_windowed, rose_criteria, qual_vars, find_first_qualifying)
+
+
 ``` 
 
 
@@ -1009,6 +1044,8 @@ paralytics_episodes_c <- paralytics_episodes_c |>
   select(-any_of("med_order_id"))
 
 paralytics_episodes_c<- unique(paralytics_episodes_c)
+
+cleanup(paralytics_episodes_all_c)
 
 # ── Calculate cumulative hours of continuous paralytic infusion PRIOR to criteria ──
 paralytics_prior_duration <- paralytics_episodes_c |>
@@ -1127,6 +1164,8 @@ time_to_paralytic_c <-time_to_paralytic_tmp_c|>
   select(hospitalization_id, med_category_c, patient_id, encounter_block, first_rose_pf, first_rose_sf, first_rose_fio2, first_rose_peep, first_rose_mode, t_rose_first, criteria, paralytic_start_time_c, ett_to_paralytic_c, criteria_to_paralytic_c, para_route)
 time_to_paralytic_c <- unique(time_to_paralytic_c)
 
+cleanup(time_to_paralytic_tmp_c)
+
 #intermittent
 paralytics_episodes_all_i <- clif_medication_admin_intermittent |>
   mutate(hospitalization_id=as.character(hospitalization_id)) |>
@@ -1149,6 +1188,8 @@ paralytics_episodes_i <- paralytics_episodes_i |>
 
 paralytics_episodes_i<- unique(paralytics_episodes_i)
   
+cleanup(paralytics_episodes_all_i)
+
 paralytics_episodes_i <- paralytics_episodes_i |>
   left_join(first_continuous_start, by = c("patient_id", "encounter_block")) |>
   # Keep only intermittent doses that occurred BEFORE continuous started (or keep all if patient never had continuous)
@@ -1178,6 +1219,8 @@ time_to_paralytic_tmp_i <- paralytics_episodes_i |>
 time_to_paralytic_i <- time_to_paralytic_tmp_i |>
   select(hospitalization_id, med_category_i, patient_id, encounter_block, first_rose_pf, first_rose_sf, first_rose_fio2, first_rose_peep, first_rose_mode, t_rose_first, criteria, paralytic_start_time_i,criteria_to_this_paralytic_i, ett_to_paralytic_i, criteria_to_paralytic_i, para_route_i, intermittent_para)
 time_to_paralytic_i <- unique(time_to_paralytic_i)
+
+cleanup(time_to_paralytic_tmp_i, first_continuous_start)
 
 #first time where paralytic dose is not 0 - time to this from meeting criteria, time from 1 hour after intubation to exclude induction paralytics
 time_to_paralytic_tmp_i_rose <- paralytics_episodes_i |>
@@ -1246,6 +1289,19 @@ time_to_paralytic_tmp_i_rose <- time_to_paralytic_tmp_i_rose |>
   time_to_paralytic_i_rose <- time_to_paralytic_tmp_i_rose |>
   select(hospitalization_id, med_category_i, patient_id, encounter_block, first_rose_pf, first_rose_sf, first_rose_fio2, first_rose_peep, first_rose_mode, t_rose_first, criteria, paralytic_start_time_i_rose, ett_to_paralytic_i_rose, criteria_to_paralytic_i_rose, para_route_i_rose, intermittent_para,intermittent_para12, intermittent_para24, intermittent_para48, intermittent_para72, intermittent_para0, intermittent_paraever)
 time_to_paralytic_i_rose <- unique(time_to_paralytic_i_rose)
+
+cleanup(
+  time_to_paralytic_tmp_i_rose,
+  para_24,
+  para_48,
+  para_72,
+  para_0,
+  para_12,
+  para_ever,
+  paralytics_episodes_c,
+  paralytics_episodes_i,
+  temp_times
+)
 
 ```
 
@@ -1355,6 +1411,19 @@ cat('This yields an eligible ROSE cohort of',
     sum(final_cohort_rose_rose$any_paralytic_72), 'were started on paralytics in 72 hours, and',    
     sum(final_cohort_rose_rose$any_paralytic_ever), 'were ever started on paralytics, all defined by continuous dosing or at least 3 pushes after meeting criteria during the first intubation') 
 
+cleanup(
+  paralytic_start_i,
+  paralytic_start_i_rose,
+  paralytic_start_c,
+  paralytic_start_all_rose,
+  paralytics_prior_duration,
+  paralytics_post_duration,
+  paralytics_total_duration,
+  paralytics_48h_duration,
+  time_to_paralytic_c,
+  time_to_paralytic_i,
+  time_to_paralytic_i_rose
+)
 ```
 
 ```{r Define Proning Episodes for covariate inclusion - Those Occurring During First Ventilator Episode}
@@ -1445,7 +1514,7 @@ prone_episodes <- prone_episodes_all |>
   filter(row_number()==1) |>
   ungroup() |>
   select(patient_id, encounter_block, prone_episodes:mean_pt_prone_duration)
-rm(temp_times)
+cleanup(temp_times, prone_episodes_all, position_output)
 ```
 
 
@@ -1459,7 +1528,7 @@ cohort_hospitalization_ids <- clif_hospitalization |>
   select(patient_id, hospitalization_id, encounter_block, in_cohort) |>
   distinct() |>
   collect()
-rm(temp)
+cleanup(temp)
 
 #Get Needed Variables from Hospitalization Tables
 #Age, Discharge Category, Final Admission Dttm, Final Discharge Dttm
@@ -1487,7 +1556,7 @@ cohort_times <- final_cohort_rose_rose |>
     (is.na(intermittent_para48) | intermittent_para48 < 3) & criteria_to_paralytic_c <= 48 ~ paralytic_start_time_c,
     TRUE ~ as.POSIXct(NA)
   ))
-rm(temp)
+cleanup(temp)
 
 #What Hospital is the Patient at When t_enrollment Occurs
 #Was the Patient in a Procedural Area In the Week Prior to t_enrollment?
@@ -1800,7 +1869,7 @@ set_rr_paralytic <- vent_data |>
   ungroup() |>
   select(patient_id, encounter_block, rr_diff_max_paralytic) 
 set_rr_paralytic <- unique(set_rr_paralytic)
-rm(temp_times)
+cleanup(temp_times)
 
 #Calculate Norepinephrine Equivalent
 pressor_data <- clif_medication_admin_continuous |>
@@ -1927,6 +1996,8 @@ norepi_equivalent <- pressor_data |>
   select(patient_id, encounter_block, nee_pressor_dose) |> #, norepi_dose, epi_dose, vaso_dose, angiotensin_dose, dopa_dose, phenyl_dose) |>
   ungroup()
 
+cleanup(pressor_data, pressor_units)
+
 # Calculate lowest GCS for sofa in 24h prior to enrollment
 sofa_gcs <- clif_patient_assessments |>
   filter(assessment_category == "gcs_total") |> 
@@ -2043,6 +2114,8 @@ min_rass12_paralytics <- rass |>
   select(patient_id, encounter_block, min_rass12_paralytic) |> 
   ungroup()
 
+cleanup(rass, rass_tmp)
+
 #Calculate Lowest MAP 24h prior to enrollment for SOFA
 #calculate map from sbp and dbp
 sbp <- clif_vitals |>
@@ -2106,6 +2179,8 @@ sofa_map <- bp |>
   filter(row_number()==1) |>
   select(patient_id, encounter_block, max_sofa_map) |> 
   ungroup()
+
+cleanup(sbp, sbp_clean, dbp, dbp_clean, map, map_clean, bp)
 
 #Calculate highest bilirubin in 24h prior to enrollment for sofa
 sofa_bili <- clif_labs |>
@@ -2213,6 +2288,8 @@ min_ph <- pH |>
   select(patient_id, encounter_block, min_ph) |> 
   ungroup()
 
+cleanup(pH)
+
 paralytic_start_all <- paralytic_start_all |>
   left_join(paralytic_start_time) |>
   select(hospitalization_id, med_category_c, patient_id, encounter_block, paralytic_start_time_c, ett_to_paralytic_c, ratio_at_paralytics_c, para_route, med_category_i, paralytic_start_time_i, ett_to_paralytic_i, para_route_i, intermittent_para, ratio_at_paralytics_i) |>
@@ -2298,7 +2375,45 @@ rose_analytic_data <- rose_analytic_data |>
 
 write_parquet(rose_analytic_data, paste0(project_location, '/project_tables_DO_NOT_UPLOAD/rose_analytic_data.parquet'))
 
-gc()
+cleanup(
+  hospitalization_vars,
+  demos,
+  hospital_location,
+  bmi,
+  final_cohort_rose_rose,
+  vent_times,
+  prone_episodes,
+  min_ph,
+  code_status_rose,
+  pf_paralytic,
+  set_rr,
+  set_tv,
+  mv_obs,
+  plat,
+  norepi_equivalent,
+  min_rass,
+  min_rass12,
+  max_rass12,
+  sofa_pressors,
+  sofa_map,
+  sofa_rass,
+  sofa_gcs,
+  sofa_bili,
+  sofa_cr,
+  sofa_plt,
+  sars_cov2,
+  paralytic_start_all,
+  code_status_paralytics,
+  set_tv_paralytic,
+  set_rr_paralytic,
+  mv_obs_paralytic,
+  max_rass12_paralytics,
+  min_rass12_paralytics,
+  min_ph_paralytics,
+  paralytic_start_time,
+  cohort_times
+)
+
 ```
 
 
@@ -2314,6 +2429,21 @@ cohort_hospitalization_ids <- cohort_hospitalization_ids |>
   select(-keep)
   
 save(cohort_hospitalization_ids, file = paste0(project_location, "/project_tables_DO_NOT_UPLOAD/cohort_hospitalization_ids.RData"))
+
+cleanup(
+  clif_patient,
+  clif_hospitalization,
+  clif_vitals,
+  clif_labs,
+  clif_medication_admin_continuous,
+  clif_medication_admin_intermittent,
+  clif_adt,
+  clif_patient_assessments,
+  clif_respiratory_support,
+  clif_position,
+  clif_microbiology_nonculture,
+  clif_code_status, 
+  hospitalization_ids, cohort_hospitalization_ids, rose_analytic_data)
 
 toc() #End R time
 ```
