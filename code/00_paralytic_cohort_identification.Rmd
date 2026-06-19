@@ -4,14 +4,60 @@ title: "cohort_identification_paralytic_use"
 
 #Specify File Paths, Project Path and Site - SITE SPECIFIC
 #Load the Required CLIF Tables (or if using ARROW/parquet refer to table in situ on storage drive)
-```{r}
 
-site_time_zone <-"America/New_York" #Add your local time zone prior to UTC conversion, options for this Analysis are EST = 'America/New_York', CST = 'America/Chicago', PST = 'America/Los_Angeles' 
-tables_location <-"Z:/barker/clif_3_22/CLIF-2.0.0-dttm-update-R" #Add local path to CLIF tables
-project_location <-"Z:/barker/clif_paralytics" #Add local path to project location, where results will output
-site <-"Michigan" #Add local site name
-file_type <-"parquet" #Options are "parquet" or "csv"
+```{r Load Needed Libraries, include=FALSE}
+packages <- c("duckdb", 
+              "lubridate", 
+              "tidyverse", 
+              "dplyr",
+              "table1", 
+              "broom", 
+              "arrow", 
+              "rvest", 
+              "readr", 
+              "fst", 
+              "data.table", 
+              "collapse", 
+              "tictoc", 
+              "purrr",
+              "yaml", 
+              "rprojroot"
+              )
 
+install_if_missing <- function(package) {
+  if (!require(package, character.only = TRUE)) {
+    install.packages(package, dependencies = TRUE)
+    library(package, character.only = TRUE)
+  }
+}
+
+sapply(packages, install_if_missing)
+rm(packages, install_if_missing)
+
+#Use Dplyr select as default
+select <- dplyr::select
+
+
+{ # Load config to specify local paths
+    cat("Load config to specify local paths\n")
+    # Find project root
+    project_root <- find_root(rprojroot::has_dir("config"))
+    
+    # Read YAML config
+    config <- yaml::read_yaml(file.path(project_root, "config", "config.json"))
+
+    # Assign config values to R variables
+    tables_location <- config$tables_path
+    project_location <- config$project_location
+    site <- config$site_name
+    site_time_zone <- config$time_zone
+    file_type <- config$file_type
+  
+    rm(config)
+  } 
+
+
+#Check timezone
 check_timezone <- function(site_timezone, intended_timezone = Sys.timezone()) {
   if (site_timezone != intended_timezone) {
     cat("Warning: You specified", site_timezone, "but your system time zone is", intended_timezone, "\n")
@@ -35,6 +81,7 @@ check_timezone <- function(site_timezone, intended_timezone = Sys.timezone()) {
 #Time Zone Check
 result <- check_timezone(site_time_zone)
 
+
 #Create Sub Folders within Project Folder
 # Check if the output directory exists; if not, create it
 if (!dir.exists(paste0(project_location, "/project_tables_DO_NOT_UPLOAD"))) {
@@ -46,36 +93,6 @@ if (!dir.exists(paste0(project_location, "/project_output_UPLOAD"))) {
 ```
 
 
-```{r Load Needed Libraries, include=FALSE}
-packages <- c("duckdb", 
-              "lubridate", 
-              "tidyverse", 
-              "dplyr",
-              "table1", 
-              "broom", 
-              "arrow", 
-              "rvest", 
-              "readr", 
-              "fst", 
-              "data.table", 
-              "collapse", 
-              "tictoc", 
-              "purrr")
-
-install_if_missing <- function(package) {
-  if (!require(package, character.only = TRUE)) {
-    install.packages(package, dependencies = TRUE)
-    library(package, character.only = TRUE)
-  }
-}
-
-sapply(packages, install_if_missing)
-rm(packages, install_if_missing)
-
-#Use Dplyr select as default
-select <- dplyr::select
-
-```
 
 ```{r Keep Track of HOw Long this Markdown Takes to Run, Can Potentially Identify Issues}
 tic()
@@ -101,7 +118,9 @@ Exclusion criteria: Have not received >3h of continuous paralytics, >2 intermitt
 ## Date range
 Specify the start and end dates for the cohort
 ```{r Start Times and Whether Pediatric Patients Are Included}
-start_date <- as.POSIXct("2018-01-01", tz=site_time_zone)
+start_date <- as.POSIXct(
+  ifelse(site == "Rush" | site == "RUSH", "2020-04-01", "2018-01-01"),
+  tz = site_time_zone) #accounts for Rush not having positioning data until pandemic
 end_date <- as.POSIXct("2025-12-31", tz=site_time_zone)
 
 include_pediatric <- FALSE
@@ -757,51 +776,45 @@ vent_data <- vent_data |>
 #Calculate PF
 #Indicate if 'rose_eligible' per P/F and S/F (will need repeat level if S/F criteria)
 vent_data <- vent_data |>
-  mutate(fio2_set=fifelse(
-  fio2_set<0.21 | fio2_set>1, NaN, fio2_set)) |>
-#     fio2_set<21 | fio2_set>100, NaN, fio2_set/100)) |>
-  mutate(peep_set=fifelse(
-    peep_set<0 | peep_set>35, NaN, peep_set)) |>
-  #Now Calculate PF Ratios
-  mutate(pf_ratio=pao2/fio2_set) |>
-  #Now Calculate SF Ratios
-  mutate(sf_ratio=pao2_i/fio2_set) |>
-  #Indicate if ROSE Eligible - This Should ALL be During Vent Episode
-  mutate(rose_eligible_pf=fcase(
-    is.na(pao2)  | is.na(peep_set), NaN,
-    pf_ratio<150 & peep_set>=8, 1,
-    !is.na(pf_ratio) & (pf_ratio>=150 | peep_set<8), 0)) |>
-  mutate(rose_eligible_sf=fcase(
-    is.na(pao2_i)  | is.na(peep_set), NaN,
-    sf_ratio<150 & peep_set>=8, 1,
-    !is.na(sf_ratio) & (sf_ratio>=150 | peep_set<8), 0)) |>
-  mutate(rose_eligible=fcase(
-    (rose_eligible_sf == 0 & is.nan(rose_eligible_pf)), 0,
+  mutate(fio2_set = fifelse(fio2_set < 0.21 | fio2_set > 1, NA_real_, fio2_set)) |>
+  mutate(peep_set = fifelse(peep_set < 0 | peep_set > 35, NA_real_, peep_set)) |>
+  mutate(pf_ratio = pao2 / fio2_set, 
+         sf_ratio = pao2_i / fio2_set) |>
+  mutate(rose_eligible_pf = fcase(
+    is.na(pao2) | is.na(peep_set), NA_real_,
+    pf_ratio < 150 & peep_set >= 8, 1,
+    !is.na(pf_ratio) & (pf_ratio >= 150 | peep_set < 8), 0)) |>
+  mutate(rose_eligible_sf = fcase(
+    is.na(pao2_i) | is.na(peep_set), NA_real_,
+    sf_ratio < 150 & peep_set >= 8, 1,
+    !is.na(sf_ratio) & (sf_ratio >= 150 | peep_set < 8), 0)) |>
+  mutate(rose_eligible = fcase(
+    (rose_eligible_sf == 0 & is.na(rose_eligible_pf)), 0,
     rose_eligible_pf == 0, 0,
-    is.nan(rose_eligible_pf)  & is.nan(rose_eligible_sf), NaN,
-    rose_eligible_pf==1, 1,
-    (rose_eligible_sf == 1 & is.nan(rose_eligible_pf)), 1))
+    is.na(rose_eligible_pf) & is.na(rose_eligible_sf), NA_real_,
+    rose_eligible_pf == 1, 1,
+    (rose_eligible_sf == 1 & is.na(rose_eligible_pf)), 1)) |>
+  mutate(ahrf_300 = fifelse(
+    (pf_ratio <= 300 | sf_ratio <= 300) %in% TRUE, 1, 0)) 
 
 vent_data <- unique(vent_data) #this takes awhile
 
-#Keep Track of How Many ABGs During Eligible Vent Episode and How Many ROSE Eligible
-pf_table <- vent_data |>
-  filter(!is.na(pf_ratio)) |>
-  mutate(n_pfs = n()) |>
-  group_by(rose_eligible_pf) |>
-  mutate(n_rose_eligible_pf=n()) |>
-  ungroup() |>
-  mutate(n_rose_eligible_pf=fifelse(
-    rose_eligible_pf==1, n_rose_eligible_pf, NaN)) |>
-  fill(n_rose_eligible_pf, .direction = 'updown') |>
-  summarise(
-    '# PF Ratios' = mean(n_pfs),
-    '# ROSE Eligible by P/F' = mean(n_rose_eligible_pf),
-    '% ROSE Eligible by P/F' = round(mean(n_rose_eligible_pf/n_pfs)*100, digits= 2)
-  )
-pf_table
-#write_csv(pf_table, paste0(project_location, "/project_output/",site, "_pfratio_sample_size.csv"))
-rm(pf_table, pao2, pao2_i)
+#total number of people in population, by year
+year <- vent_data |>
+  group_by(hospitalization_id) |>
+  summarize(year = min(year(recorded_dttm), na.rm = TRUE)) #|>
+  
+ahrf_cohort <- vent_data |>
+  group_by(hospitalization_id) |>
+  summarize(ahrf_cohort = max(as.numeric(ahrf_300), na.rm = TRUE)) |>
+  filter(ahrf_cohort==1) |>
+  left_join(year) |>
+  filter(year !=2026)
+
+
+ahrf_cohort_table <- table(ahrf_cohort$year)
+write_csv(as.data.frame(ahrf_cohort_table), paste0(project_location, '/project_tables_DO_NOT_UPLOAD/ahrf_cohort_table.csv'))
+
 ```
 
 ```{r Implement ROSE Inclusion Criteria}
@@ -1351,7 +1364,7 @@ temp_times <- vent_times |>
 
 prone_episodes_all <- clif_position |>
   mutate(hospitalization_id=as.character(hospitalization_id)) |>
-  left_join(cohort_ids) |> #NOTE: clif_labs will now include patient_id and encounter_block
+  left_join(cohort_ids) |> 
   filter(in_cohort==1) |>
   filter(!is.na(position_category)) |>
   select(-in_cohort) |>
@@ -2304,3 +2317,12 @@ save(cohort_hospitalization_ids, file = paste0(project_location, "/project_table
 
 toc() #End R time
 ```
+
+
+
+```{r Run 01 file}
+## Run 01 RMD
+rmarkdown::render(input = paste0(file.path(project_root), "/code/01_local_CLIF_paralytics_incidence_analysis.Rmd"), output_file = "output.html")
+
+```
+

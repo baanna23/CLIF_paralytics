@@ -1,0 +1,7 @@
+{
+    "site_name": "Your_Site_Name",
+    "project_location": "/path/to/project/",
+    "tables_path": "/path/to/tables/",
+    "file_type": "csv/parquet/fst",
+    "time_zone": "Add local time zone prior to UTC conversion (EST= 'America/New_York', CST = 'America/Chicago', PST = 'America/Los_Angeles') "
+}

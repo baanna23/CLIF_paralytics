@@ -29,13 +29,11 @@ The following tables are required:
 Patients on invasive mechanical ventilation, with primary outcome cohort restricted to patients who meet criteria based on ROSE RCT inclusion and exclusion criteria: No chronic mechanical ventilation (trach within 24h of intubation), PEEP >=8, P/F (or equivalent S/F x2) <=150. Excludes patients who transfer from hospital outside of health system while already receiving IMV. 
 
 ## Expected Results
-30 csv files and 4 pdf figures, saves in project_output_UPLOAD folder (in path input by site PI at beginning of 01 file)
+Vary depending on # of hospitals and study periods included. Files save in project_output_UPLOAD folder (in path input by site PI in config file)
 
 ## Detailed Instructions for running the project
 
 Detailed instructions on the code workflow are provided in the [code directory](code/README.md)
-
-** NOTE: For this project, there is no config file to update. Provide your time zone and paths to local data directly in the 00 and 01 files. 
 
 ---
 
