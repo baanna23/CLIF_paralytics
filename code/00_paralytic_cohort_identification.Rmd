@@ -143,12 +143,12 @@ tables <- c("patient", "hospitalization", "vitals", "labs",
             "medication_admin_continuous", "medication_admin_intermittent", "adt", 
             "patient_assessments", "respiratory_support", "position", 
             "dialysis", "intake_output", "ecmo_mcs", "procedures", 
-            "admission_diagnosis", "provider", "sensitivity", 
+            "admission_diagnosis", "provider", "sensitivity", "hospital_diagnosis",
             "medication_orders", "medication_admin_intermittent", 
             "therapy_details", "microbiology_culture", "sensitivity", "microbiology_nonculture", "code_status")
 
 # Tables that should be set to TRUE for this project
-true_tables <- c("patient", "hospitalization", "adt", "patient_assessments",
+true_tables <- c("patient", "hospitalization", "adt", "patient_assessments", "hospital_diagnosis",
                  "vitals", "labs", "medication_admin_continuous", "medication_admin_intermittent", "respiratory_support",
                  "position", "microbiology_nonculture", "code_status")
 
@@ -358,6 +358,12 @@ patients <- length(unique(clif_hospitalization$patient_id))
 encounters <- length(clif_hospitalization$hospitalization_id)
 cat('\n In', site, 'CLIF data there are', patients,'unique patients with', encounters, 'encounters \n')
 
+consort <- data.frame(
+  encounters = encounters,
+    patients = patients,
+  reason = "total in database"
+)
+
 cleanup(patients, encounters)
 ```
 
@@ -393,6 +399,14 @@ vent <- vent |>
 patients <- length(unique(vent$patient_id))
 encounters <- length(unique(vent$hospitalization_id))
 cat('\n Paitents Receiving Mechanical Ventilation: \n  In', site, 'CLIF data there are', patients,'unique patients with', encounters, 'encounters \n')
+
+next_exclusion <- data.frame(
+  encounters = encounters,
+    patients = patients,
+  reason = "initial number on IMV before cleaning"
+)
+
+consort <- bind_rows(consort, next_exclusion)
 ```
 
 #Identify Ventilator Episodes
@@ -568,13 +582,23 @@ vent_eligible <- vent_episodes |>
 #Describe Numbers
 cat(site, '\n After filtering to patients with >0 hours of MV for First Episode there are,', dim(vent_eligible)[1], 'ventilator episodes among,',length(unique(vent_eligible$hospitalization_id)), 'hospitalizations from',length(unique(vent_eligible$patient_id)), 'patients.')
 
+next_exclusion <- data.frame(
+  encounters = dim(vent_eligible)[1],
+    patients = length(unique(vent_eligible$patient_id)),
+  reason = "actual initial number on IMV after ensuring data in IMV episode"
+)
+
+consort <- bind_rows(consort, next_exclusion)
+
 cleanup(device_transitions, vent, vent_episodes, patients, encounters)
+
 ```
 #EXCLUSIONS (Overall and ROSE cohort):
 -Tracheostomy prior to completing first 24 hours of first vent (includes tracheostomy on admission). 
 -Patient admitted from OSH on the vent
 
 -After Final Identification of ABG criteria will then randomly select 1 eligible encounter for each patient with more than 1 eligible, will eventually exclude patients with DNI, ecmo, prior paralytics at time of meeting criteria for ROSE cohort
+
 ```{r Implement Exclusion Criteria}
 #List of patient_id, encounter_block, hospitalization_id and vent_start
 temp_ids <- vent_eligible |>
@@ -617,10 +641,18 @@ vent_eligible <- vent_eligible |>
 #Describe for Consort
 cat('\n At', site,',', length(unique(vent_eligible$hospitalization_id[vent_eligible$tracheostomy==1])), 'patient hospitalizations were ventilated via a tracheostomy,', length(unique(vent_eligible$hospitalization_id[vent_eligible$trach_within_24==1])), 'within 24 hours of ventilator start and are thus excluded. \n')
 
+next_exclusion <- data.frame(
+  excluded_encounters = length(unique(vent_eligible$hospitalization_id[vent_eligible$trach_within_24==1])),
+    involved_patients = length(unique(vent_eligible$patient_id[vent_eligible$trach_within_24==1])),
+  reason = "trach within 24h"
+)
+
+consort <- bind_rows(consort, next_exclusion)
+
 #Vent Eligible Excluding Early Trach
 vent_eligible <- vent_eligible |>
   filter(trach_within_24!=1)
-#cleanup(trach)
+
 #Update Cohort_IDs
 #List of patient_id, encounter_block, hospitalization_id and vent_start
 temp_ids <- vent_eligible |>
@@ -677,6 +709,14 @@ cleanup(osh_transfer, first_device)
 #Describe for Consort
 cat('\n At', site,',', length(unique(vent_eligible$hospitalization_id[vent_eligible$transfer_on_vent==1])), 'patient hospitalizations were from patients who met criteria for having been transfered while on a ventilator and are thus excluded,') 
 
+next_exclusion <- data.frame(
+  excluded_encounters = length(unique(vent_eligible$hospitalization_id[vent_eligible$transfer_on_vent==1])),
+    involved_patients = length(unique(vent_eligible$patient_id[vent_eligible$transfer_on_vent==1])),
+  reason = "transfer OSH on vent"
+)
+
+consort <- bind_rows(consort, next_exclusion)
+
 #Current Vent Eligible Cohort
 vent_eligible <- vent_eligible |>
   filter(transfer_on_vent!=1)
@@ -688,6 +728,7 @@ cat('this yields an eligible ventilator cohort of,', length(unique(vent_eligible
 temp_ids <- vent_eligible |>
   select(patient_id, encounter_block) |>
   mutate(in_cohort=1)
+
 #Create a Table Containing the 3 Identifiers c('patient_id', 'hospitalization_id', 'encounter_block')
 cohort_ids <- clif_hospitalization |>
   mutate(hospitalization_id=as.character(hospitalization_id)) |>
@@ -868,6 +909,15 @@ rose_windowed <- vent_data |>
                      as.POSIXct(vent_episode_start, tz = "UTC") + dminutes(30)
   ) |>
   collect()  # pull from DB once, work in memory from here
+
+
+next_exclusion <- data.frame(
+  excluded_encounters = length(unique(vent_data$hospitalization_id)) - length(unique(rose_windowed$hospitalization_id)),
+    involved_patients = length(unique(vent_data$patient_id)) - length(unique(rose_windowed$patient_id)),
+  reason = "don't have p/f or s/f data"
+)
+
+consort <- bind_rows(consort, next_exclusion)
 
 # ── Step 2: For each patient/encounter, find the earliest qualifying event ──
 #   Rules:
@@ -1373,6 +1423,16 @@ mutate(intermittent_para = coalesce(intermittent_para, 0),
 
 #data among patients who meet ROSE criteria, including only para >2, cannot have been on continuous paralytics >3h prior to meeting criteria or received >2 pushes prior
 
+inclusions <- rose_criteria_timing |>
+  filter(is.na(criteria)==F)
+
+next_exclusion <- data.frame(
+  excluded_encounters = length(unique(rose_criteria_timing$hospitalization_id)) - length(unique(inclusions$hospitalization_id)),
+    involved_patients = length(unique(rose_criteria_timing$patient_id)) - length(unique(inclusions$patient_id)),
+  reason = "don't meet ROSE criteria"
+)
+
+consort <- bind_rows(consort, next_exclusion)
 
 final_cohort_rose_rose <- rose_criteria_timing |>
   filter(!is.na(criteria)) |>
@@ -1386,9 +1446,37 @@ final_cohort_rose_rose <- rose_criteria_timing |>
     total_continuous_para_hours_post  = coalesce(total_continuous_para_hours_post, 0),
     total_continuous_para_hours_all   = coalesce(total_continuous_para_hours_all, 0),
     total_continuous_para_hours_48h   = coalesce(total_continuous_para_hours_48h, 0),
-  ) |>
+  ) 
+
+inclusions <- final_cohort_rose_rose |>
+  filter(total_continuous_para_hours_prior < 3)
+
+next_exclusion <- data.frame(
+  excluded_encounters = length(unique(final_cohort_rose_rose$hospitalization_id)) - length(unique(inclusions$hospitalization_id)),
+    involved_patients = length(unique(final_cohort_rose_rose$patient_id)) - length(unique(inclusions$patient_id)),
+  reason = "3+ hours continuous paralytics before criteria"
+)
+
+consort <- bind_rows(consort, next_exclusion)
+
+
+final_cohort_rose_rose <- final_cohort_rose_rose |>
   # Exclude if >= 3 cumulative hours of continuous paralytics prior to criteria
-  filter(total_continuous_para_hours_prior < 3) |> #includes those with 0 who never received paralytics
+  filter(total_continuous_para_hours_prior < 3) #includes those with 0 who never received paralytics
+
+inclusions <- final_cohort_rose_rose |>
+  filter(is.na(criteria_to_paralytic_i_rose) | intermittent_para0 <3)
+
+next_exclusion <- data.frame(
+  excluded_encounters = length(unique(final_cohort_rose_rose$hospitalization_id)) - length(unique(inclusions$hospitalization_id)),
+    involved_patients = length(unique(final_cohort_rose_rose$patient_id)) - length(unique(inclusions$patient_id)),
+  reason = "3+ intermittent pushes prior to starting"
+)
+
+consort <- bind_rows(consort, next_exclusion)
+
+
+final_cohort_rose_rose <- final_cohort_rose_rose |>
   filter(is.na(criteria_to_paralytic_i_rose) | intermittent_para0 <3) |> #need less than 3 prior to starting
   mutate(any_paralytic_48 = fifelse((!is.na(criteria_to_paralytic_c) & criteria_to_paralytic_c<48)  | (!is.na(criteria_to_paralytic_i_rose) & intermittent_para48 >2), 1, 0),
          any_paralytic_12 = fifelse((!is.na(criteria_to_paralytic_c) & criteria_to_paralytic_c<12)  | (!is.na(criteria_to_paralytic_i_rose) & intermittent_para12 >2), 1, 0), 
@@ -1411,7 +1499,22 @@ cat('This yields an eligible ROSE cohort of',
     sum(final_cohort_rose_rose$any_paralytic_72), 'were started on paralytics in 72 hours, and',    
     sum(final_cohort_rose_rose$any_paralytic_ever), 'were ever started on paralytics, all defined by continuous dosing or at least 3 pushes after meeting criteria during the first intubation') 
 
+#Update Running Table of Cohort IDs
+#List of patient_id, encounter_block, hospitalization_id and vent_start
+temp_ids <- final_cohort_rose_rose |>
+  select(patient_id, hospitalization_id, encounter_block) |>
+  mutate(in_cohort=1)
+
+#Create a Table Containing the 3 Identifiers c('patient_id', 'hospitalization_id', 'encounter_block')
+cohort_ids <- clif_hospitalization |>
+  mutate(hospitalization_id=as.character(hospitalization_id)) |>
+  left_join(temp_ids) |>
+  filter(in_cohort==1) |>
+  select(patient_id, hospitalization_id, encounter_block, in_cohort) |>
+  collect()
+
 cleanup(
+  temp_ids,
   paralytic_start_i,
   paralytic_start_i_rose,
   paralytic_start_c,
@@ -1529,6 +1632,27 @@ cohort_hospitalization_ids <- clif_hospitalization |>
   distinct() |>
   collect()
 cleanup(temp)
+
+#ICD code variable
+diagnosis <- clif_hospital_diagnosis |>
+  mutate(hospitalization_id=as.character(hospitalization_id)) |>
+  left_join(cohort_ids) |>
+  filter(in_cohort==1) |>
+  collect() |>
+  mutate(
+    ards_code=fifelse(
+      grepl('j80', diagnosis_code, ignore.case=T), 1, 0)
+  #  chf_code=fifelse(
+   #   grepl('i50', diagnosis_code, ignore.case=T), 1, 0)
+    ) |>
+  group_by(hospitalization_id, patient_id, encounter_block) |>
+  mutate(
+    #1st Definition ARDS Code, doesn't matter if i50 CHF code
+    ards_icd_10 = fifelse(sum(ards_code, na.rm=T) >= 1, 1, 0, 0
+    ))|>
+  ffirst() |>
+  select(patient_id, encounter_block, ards_icd_10) |>
+  distinct()
 
 #Get Needed Variables from Hospitalization Tables
 #Age, Discharge Category, Final Admission Dttm, Final Discharge Dttm
@@ -2298,15 +2422,14 @@ paralytic_start_all <- paralytic_start_all |>
 rose_analytic_data <- hospitalization_vars |>
   left_join(demos) |>
   left_join(hospital_location) |>
-  left_join(bmi)
-  
-rose_analytic_data<- rose_analytic_data |>
+  left_join(bmi) |>
   left_join(final_cohort_rose_rose) |>
   left_join(vent_times) |>
   left_join(prone_episodes) |>
   left_join(min_ph) |>
   left_join(code_status_rose) |>
   left_join(pf_paralytic) |>
+  left_join(diagnosis) |>
   left_join(set_rr) |>
   left_join(set_tv) |>
   left_join(mv_obs) |>
@@ -2421,7 +2544,9 @@ cleanup(
 ## Export the list of `hospitalization_id` for the identified patients
 hospitalization_ids<- rose_analytic_data |>
   select(patient_id, encounter_block) |>
-  mutate(keep=1)
+  mutate(keep=1) 
+
+hospitalization_ids <- unique(hospitalization_ids)
 
 cohort_hospitalization_ids <- cohort_hospitalization_ids |>
   left_join(hospitalization_ids) |>
@@ -2429,6 +2554,7 @@ cohort_hospitalization_ids <- cohort_hospitalization_ids |>
   select(-keep)
   
 save(cohort_hospitalization_ids, file = paste0(project_location, "/project_tables_DO_NOT_UPLOAD/cohort_hospitalization_ids.RData"))
+write_csv(consort, paste0(project_location, '/project_output_UPLOAD/', site,'_consort.csv'))
 
 cleanup(
   clif_patient,
@@ -2443,7 +2569,9 @@ cleanup(
   clif_position,
   clif_microbiology_nonculture,
   clif_code_status, 
-  hospitalization_ids, cohort_hospitalization_ids, rose_analytic_data)
+  hospitalization_ids, cohort_hospitalization_ids, ahrf_cohort, clif_hospital_diagnosis, code_status, diagnosis, rose_criteria_timing, vent_data, vent_eligible, year, trach, plat_tmp, next_exclusion, inclusions, cohort_ids, rose_analytic_data)
+
+gc()
 
 toc() #End R time
 ```
