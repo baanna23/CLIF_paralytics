@@ -250,108 +250,84 @@ if (!include_pediatric) {
     compute()
 }
 
+#Create Hospital Blocks Here (Some Transfers Will begin with ED at One Hospital and Continue in ICU/Ward/Stepdown at the Next)
+# Collect as data table
+hospitalizations <- as.data.table(clif_hospitalization)
+
+# Order by patient ID and admission date/time
+setorder(hospitalizations, patient_id, admission_dttm)
+
+# Create column taht stores the time of previous discharge
+hospitalizations[, prev_discharge := shift(discharge_dttm, n = 1), by = patient_id]
+
+# Create column that stores the gap in hours between current admission and prior discharge
+hospitalizations[, gap_hours := as.numeric(difftime(admission_dttm, prev_discharge, units = "hours"))]
+
+# Flag a hospitalization if it represents a new hospital block
+HOSPITAL_BLOCK_TIME_HRS <- 6
+hospitalizations[, new_block := is.na(prev_discharge) | gap_hours > HOSPITAL_BLOCK_TIME_HRS]
+
+# Compute cumulative block number per patient (e.g., first hospital block =1 , second = 2, etc.)
+hospitalizations[, block_num := cumsum(replace_na(new_block, TRUE)), by = patient_id]
+
+# Determine end of hospitalization time for discharge location
+hospitalizations[, end_ts := coalesce(discharge_dttm, admission_dttm)]
+
+#Remove helper columns
+hospitalizations[, c("prev_discharge", "gap_hours", "new_block") := NULL]
+
+# Create functions to return NA (if it is NA) or the min/max of a group
+max_or_na <- function(x) if(all(is.na(x))) as.POSIXct(NA) else max(x, na.rm = TRUE)
+min_or_na <- function(x) if(all(is.na(x))) as.POSIXct(NA) else min(x, na.rm = TRUE)
+
+# Store information on grouped hospitalizations (hospital blocks)
+hospitalizations <- hospitalizations[, `:=`(
+  # Stores the start of the hospital block time
+  final_admission_dttm = min_or_na(admission_dttm),
+  # Stores the end of the hospital block time
+  final_discharge_dttm = max_or_na(discharge_dttm),
+  # Stores the discharge location from last admission within block
+  final_discharge_category = discharge_category[which.max(end_ts)],
+  # Stores the discharge location from last admission within block
+  final_discharge_name = discharge_name[which.max(end_ts)]
+), by = .(patient_id, block_num)]
+
+
+# Create unique hospital block IDs
+hospitalizations[, encounter_block := paste0(patient_id, "_", block_num)]
+
+#Extract Unique IDs
+encounter_blocks = select(hospitalizations, c('patient_id', 'hospitalization_id', 'encounter_block')) |> as_arrow_table()
+
+# Create One Row per Hospitalization Block and Extract Info For Consort
+clif_hospitalization <- hospitalizations[
+  order(encounter_block, admission_dttm), 
+  .SD[1], 
+  by = encounter_block
+] |>
+  as_arrow_table() |>
+  distinct() |>
+  compute()
+rm(hospitalizations)
+
 #To be Thorough Will Keep WARD, ICU and ER Encounters (in case of ED to ICU within one system) -> changed to new location_categories
 inpatient_hospitalization_ids <- clif_adt |>
   mutate(hospitalization_id=as.character(hospitalization_id)) |>
+  inner_join(encounter_blocks %>% select(hospitalization_id, encounter_block), 
+             by='hospitalization_id') |>
   filter(tolower(location_category) %in% c("ward", "icu", "ed", "stepdown")) |>
-  select(hospitalization_id) |>
-  collect()
-
-clif_hospitalization <- clif_hospitalization |>
-  collect() |> #Have to Bring in to Environment To Correctly Filter IDs (at JHH)
-  filter(hospitalization_id %in% inpatient_hospitalization_ids$hospitalization_id) |>
-  as_arrow_table() #Put Back to Arrow Table
-cleanup(inpatient_hospitalization_ids)
-
-#Create an Hospital Block ID - This is to Identify Continuous Hospitalizations When Patients Are Transferred Between Hospitals in One Health System
-#This code is intended be robust to various ways encounters may be coded in CLIF databases
-hospital_blocks <- clif_hospitalization |>
-  select(patient_id, hospitalization_id, admission_dttm, discharge_dttm) |>
-  arrange(patient_id, admission_dttm) |>
-  collect()
-
-#Identify Admissions That Occur Within 3 Hours of a Discharge (Will Consider Those Linked and as Part of One Continuous Encounter)
-#Use Data Table for Speed
-linked_encounters <- setDT(hospital_blocks)
-#Create a Variable for the time of the next admission and time of previous discharge
-linked_encounters[, ':=' (next_admit_dttm = data.table::shift(admission_dttm, n=1, type = "lead")), by = patient_id]
-linked_encounters[, ':=' (prev_dc_dttm = data.table::shift(discharge_dttm, n=1, type = "lag")), by = patient_id]
-#Calculates Time Between Discharge and Next Admit
-linked_encounters[, next_diff_time := difftime(next_admit_dttm, discharge_dttm, units = "hours")]
-linked_encounters[, prev_diff_time := difftime(admission_dttm, prev_dc_dttm, units = "hours")]
-
-#Now Create Variable Indicating a Linked Encounter (next_admit-dc time <6 hours or prev_dc-admint <6 hours)
-linked_encounters[, linked := fcase(
-  (next_diff_time <6 | prev_diff_time <6), 1)]
-#Filter to Only Linked Encounters and number them
-linked_encounters <- linked_encounters[linked==1]
-#This Identifies the First Encounter in a Series of Linked Encounters
-linked_encounters[, first_link := fcase(
-  (rowid(linked)==1 | (next_diff_time<6 & prev_diff_time>6)), 1
-), by = patient_id]
-#Now Numbers Encounters, easier in dplyr
-#Filter to Just First Links, Number them and then Remerge with linked encounters
-temp <- as_tibble(linked_encounters) |>
- filter(first_link==1) |>
- group_by(patient_id) |>
- mutate(link_group=row_number()) |>
- ungroup() |>
- select(hospitalization_id, link_group) 
-linked_encounters <- as_tibble(left_join(linked_encounters, temp, join_by(hospitalization_id))) |>
-  fill(link_group, .direction = c("down")) |>
-  #Create a Variable Indicating Which Number of LIinked Encounter the Encounter is
-  group_by(patient_id, link_group) |>
-  mutate(link_number=row_number()) |>
-  ungroup() |>
-  select(hospitalization_id, linked, link_number)
-cleanup(temp)
-
-#Now Join Back to Hospitalization Table
-clif_hospitalization <- clif_hospitalization |>
-  left_join(linked_encounters) |>
-  mutate(linked=if_else(is.na(linked), 0, linked)) |>
+  select(encounter_block) |>
   compute()
 
-#Pull Out the Any Linked Encounter that Is NOt the First Encounter and Assign Each Encounter an Encounter Block ID in the Original clif_hospitalization table
-df_link <- clif_hospitalization |>
-  filter(link_number>1) |>
-  collect()
-
 clif_hospitalization <- clif_hospitalization |>
-  group_by(patient_id) |>
-  arrange(patient_id, admission_dttm) |>
-  #Remove Link Numbers that Are Not First in Link Encounter
-  filter(link_number==1 | is.na(link_number)) |>
-  #Make Encounter Blocks
-  collect() |>
-  mutate(encounter_block=row_number()) |>
-  rowbind(df_link, fill = TRUE) |> #Bring Back in Link Numbers >1
-  group_by(patient_id) |> arrange(patient_id, admission_dttm) |>
-  fill(encounter_block, .direction = "down") |>
-  ungroup()|>
-  #Finally, for Linked Encounters Identify 'Final_admit_date' and 'final_dc_date' which are the first and last dates of a link block
-  group_by(patient_id, encounter_block) |>
-  mutate(final_admission_dttm=fcase(
-    row_number()==1, as.POSIXct(admission_dttm)
-  )) |>
-  mutate(final_discharge_dttm=fcase(
-    row_number()==n(), as.POSIXct(discharge_dttm)
-  )) |>
-  mutate(final_discharge_category=fcase(
-    row_number()==n(), discharge_category
-  )) |>
-  mutate(final_discharge_name=fcase(
-    row_number()==n(), discharge_name
-  )) |>
-  fill(final_admission_dttm, 
-       final_discharge_dttm,
-       final_discharge_name, 
-       final_discharge_category, 
-       .direction = 'updown') |>
-  relocate(encounter_block, .after = 'hospitalization_id') |>
-  as_arrow_table()
+  semi_join(inpatient_hospitalization_ids, by='encounter_block') |>
+  compute()
+cleanup(inpatient_hospitalization_ids)
 
-cleanup(linked_encounters, df_link, hospital_blocks)
+#Update Encounter Blocks with Eligible Encounters
+encounter_blocks <- encounter_blocks |>
+  semi_join(clif_hospitalization ,by='encounter_block') |>
+  compute()
 
 #Keep Track for Consort Diagram
 patients <- length(unique(clif_hospitalization$patient_id))
@@ -369,30 +345,23 @@ cleanup(patients, encounters)
 
 #Filter Only to Patients Who Receive Mechanical Ventilation
 ```{r}
-#Bring in Temporary File with patient_id, hospitalization_id and encounter_block
-temp_ids <- clif_hospitalization |>
-  select(patient_id, hospitalization_id, encounter_block) |>
-  collect()
-
 #Identify Patients Who EVER Received Mechanical Ventilation During a Hospitalization
-vent <- clif_respiratory_support |>
+ever_vent <- clif_respiratory_support |>
+  filter(tolower(device_category)=='imv') |>
   mutate(hospitalization_id=as.character(hospitalization_id)) |>
-  #Only Need IDs in the Current Working ClIF hospitalization Table
-  filter(hospitalization_id %in% temp_ids$hospitalization_id) |>
-  #Will Also Merge in Encounter Block Here - Will Allow Us to Keep Track of LInked Encounters
-  left_join(temp_ids) |>
+  #Only Need IDs in the Current Working clif hospitalization Table
+  #This is the Joint Table with Those Who Ever Received Mechanical Ventilation
+  semi_join(encounter_blocks, 
+             by='hospitalization_id') |>
+  select(hospitalization_id) |>
   compute()
-cleanup(temp_ids)
 
 #Identify Those Who Have Ever Been on a Vent During an Encounter Block
-vent <- vent |> 
-  mutate(on_vent=if_else(tolower(device_category)=='imv', 1, 0)) |>
-  group_by(patient_id, encounter_block) |>
-  mutate(ever_vent=if_else(max(on_vent, na.rm=T)==1, 1, 0)) |>
-  filter(ever_vent==1) |>
-  select(-ever_vent) |>
-  ungroup() |>
-  compute()
+vent <- clif_respiratory_support |> 
+    mutate(hospitalization_id=as.character(hospitalization_id)) |>
+    semi_join(ever_vent, by='hospitalization_id') |>
+    inner_join(encounter_blocks, by='hospitalization_id') |>
+   compute()
 
 #Identify First Vent Start Time and Vent Duration
 #Keep Track for Consort Diagram
@@ -407,6 +376,8 @@ next_exclusion <- data.frame(
 )
 
 consort <- bind_rows(consort, next_exclusion)
+
+cleanup(ever_vent)
 ```
 
 #Identify Ventilator Episodes
@@ -603,22 +574,22 @@ cleanup(device_transitions, vent, vent_episodes, patients, encounters)
 #List of patient_id, encounter_block, hospitalization_id and vent_start
 temp_ids <- vent_eligible |>
   select(patient_id, encounter_block) |>
-  mutate(in_cohort=1)
+  mutate(in_cohort=1) |>
+  compute()
+
 #Create a Table Containing the 3 Identifiers c('patient_id', 'hospitalization_id', 'encounter_block')
-cohort_ids <- clif_hospitalization |>
-  mutate(hospitalization_id=as.character(hospitalization_id)) |>
-  left_join(temp_ids) |>
-  filter(in_cohort==1) |>
+cohort_ids <- encounter_blocks |>
+  inner_join(temp_ids, by=c('patient_id', 'encounter_block')) |>
   select(patient_id, hospitalization_id, encounter_block, in_cohort) |>
-  collect()
+  compute()
 cleanup(temp_ids)
 
 #Tracheostomy in First 24 Hours of First Vent 
+
 trach <- clif_respiratory_support |>
-  left_join(cohort_ids) |>
-  filter(in_cohort==1) |> #This allows us to keep all encounter block info
-  select(patient_id, recorded_dttm, encounter_block, tracheostomy) |>
   filter(tracheostomy==1) |>
+  inner_join(cohort_ids, by='hospitalization_id') |>
+  select(patient_id, recorded_dttm, encounter_block, tracheostomy) |>
   arrange(patient_id, encounter_block, recorded_dttm) |>
   collect() |>
   group_by(patient_id, encounter_block) |>
@@ -659,20 +630,17 @@ temp_ids <- vent_eligible |>
   select(patient_id, encounter_block) |>
   mutate(in_cohort=1)
 #Create a Table Containing the 3 Identifiers c('patient_id', 'hospitalization_id', 'encounter_block')
-cohort_ids <- clif_hospitalization |>
-  mutate(hospitalization_id=as.character(hospitalization_id)) |>
-  left_join(temp_ids) |>
-  filter(in_cohort==1) |>
+cohort_ids <- encounter_blocks |>
+  inner_join(temp_ids, by=c('patient_id', 'encounter_block')) |>
   select(patient_id, hospitalization_id, encounter_block, in_cohort) |>
-  collect()
+  compute()
 cleanup(temp_ids)
 
 #How Many Patients Arrive First to ICU and First Device is a Vent?
 #First Define What the First Location Is
 osh_transfer <- clif_adt |>
   mutate(hospitalization_id=as.character(hospitalization_id)) |>
-  left_join(cohort_ids) |> #Here need to join first and then filter to those in cohort
-  filter(in_cohort==1) |>
+  inner_join(cohort_ids) |> #Here need to join first and then filter to those in cohort
   arrange(patient_id, encounter_block, in_dttm) |>
   collect() |>
   group_by(patient_id, encounter_block) |> # Replace group_column with the column(s) you want to group by
@@ -683,8 +651,7 @@ osh_transfer <- clif_adt |>
 #Now Define First Device Category
 first_device <- clif_respiratory_support |>
   mutate(hospitalization_id=as.character(hospitalization_id)) |>
-  left_join(cohort_ids) |> #Here need to join first and then filter to those in cohort
-  filter(in_cohort==1) |>
+  inner_join(cohort_ids) |> 
   filter(!is.na(device_category)) |>
   arrange(patient_id, encounter_block, recorded_dttm) |>
   collect() |>
@@ -730,13 +697,13 @@ temp_ids <- vent_eligible |>
   mutate(in_cohort=1)
 
 #Create a Table Containing the 3 Identifiers c('patient_id', 'hospitalization_id', 'encounter_block')
-cohort_ids <- clif_hospitalization |>
+cohort_ids <- encounter_blocks |>
   mutate(hospitalization_id=as.character(hospitalization_id)) |>
-  left_join(temp_ids) |>
-  filter(in_cohort==1) |>
+  inner_join(temp_ids) |>
   select(patient_id, hospitalization_id, encounter_block, in_cohort) |>
   collect()
 cleanup(temp_ids)
+
 ```
 
 ```{r Clean CLIF Labs Data for PaO2 and Merge with Respiratory Support for P/F Ratios}
@@ -747,8 +714,7 @@ vent_times <- vent_eligible |>
 #Filter Labs Table to Just Hospitaliztion IDs in the Cohort
 clif_labs <- clif_labs |>
   mutate(hospitalization_id=as.character(hospitalization_id)) |>
-  left_join(cohort_ids) |> #NOTE: clif_labs will now include patient_id and encounter_block
-  filter(in_cohort==1) |>
+  inner_join(cohort_ids) |> #NOTE: clif_labs will now include patient_id and encounter_block
   select(-any_of(c('in_cohort', 'lab_name'))) |>
   compute()
 
@@ -776,8 +742,7 @@ if(fio2_mean > 1){
 #Merge in PaO2 Data Here
 vent_data <- clif_respiratory_support |>
   mutate(hospitalization_id=as.character(hospitalization_id)) |>
-  left_join(cohort_ids) |>
-  filter(in_cohort==1) |>
+  inner_join(cohort_ids) |>
   left_join(vent_times) |>
   collect() |>
   mutate(recorded_dttm=as.POSIXct(recorded_dttm, tz = 'UTC')) |>
@@ -816,11 +781,8 @@ vent_data <- clif_respiratory_support |>
 #Convert SpO2 to PaO2_i for calculation of imputed P/F ratios, use non-linear conversion (Brown et al, CCM 2018)
 #Filter Labs Table to Just Hospitaliztion IDs in the Cohort
 clif_vitals <- clif_vitals |>
-  mutate(hospitalization_id = as.character(hospitalization_id))
-
-clif_vitals <- clif_vitals |>
-  left_join(cohort_ids) |> #NOTE: clif_vitals will now include patient_id and encounter_block
-  filter(in_cohort==1) |>
+  mutate(hospitalization_id = as.character(hospitalization_id)) |>
+  inner_join(cohort_ids) |> #NOTE: clif_vitals will now include patient_id and encounter_block
   select(-in_cohort) |>
   compute()
 
@@ -1075,8 +1037,7 @@ temp_times <- vent_times |>
 #continuous
 paralytics_episodes_all_c <- clif_medication_admin_continuous |>
   mutate(hospitalization_id=as.character(hospitalization_id)) |>
-  left_join(cohort_ids) |>
-  filter(in_cohort==1) |>
+  inner_join(cohort_ids) |>
   #Extra Stop Gap To Filter Out Pushes That may Have Made Into Continuous Table
   filter(tolower(med_group) %in% c("paralytics", "paralytic"),
          !tolower(med_dose_unit) %in% c('mg', 'mcg')) |> 
@@ -1219,10 +1180,8 @@ cleanup(time_to_paralytic_tmp_c)
 #intermittent
 paralytics_episodes_all_i <- clif_medication_admin_intermittent |>
   mutate(hospitalization_id=as.character(hospitalization_id)) |>
-  left_join(cohort_ids) |>
-  filter(in_cohort==1) |>
+  inner_join(cohort_ids) |>
   filter(tolower(med_group) %in% c("paralytics", "paralytic")) |>
-  select(-in_cohort) |>
   left_join(temp_times) |>
   mutate(recorded_dttm=admin_dttm) |>
   left_join(rose_criteria_timing) |>
@@ -1506,10 +1465,9 @@ temp_ids <- final_cohort_rose_rose |>
   mutate(in_cohort=1)
 
 #Create a Table Containing the 3 Identifiers c('patient_id', 'hospitalization_id', 'encounter_block')
-cohort_ids <- clif_hospitalization |>
+cohort_ids <- encounter_blocks |>
   mutate(hospitalization_id=as.character(hospitalization_id)) |>
-  left_join(temp_ids) |>
-  filter(in_cohort==1) |>
+  inner_join(temp_ids) |>
   select(patient_id, hospitalization_id, encounter_block, in_cohort) |>
   collect()
 
@@ -1536,8 +1494,7 @@ temp_times <- vent_times |>
 
 prone_episodes_all <- clif_position |>
   mutate(hospitalization_id=as.character(hospitalization_id)) |>
-  left_join(cohort_ids) |> 
-  filter(in_cohort==1) |>
+  inner_join(cohort_ids) |> 
   filter(!is.na(position_category)) |>
   select(-in_cohort) |>
   left_join(temp_times) |>
@@ -1624,10 +1581,10 @@ cleanup(temp_times, prone_episodes_all, position_output)
 ```{r Add in Covariate, Vent Data, and Patient Outcomes}
 #Generate a Table of ALL Hospitalization IDs (here this Deals with the 'Linked' Encounters)
 temp <- cohort_ids |> select(patient_id, encounter_block, in_cohort)
+
 cohort_hospitalization_ids <- clif_hospitalization |>
   mutate(hospitalization_id=as.character(hospitalization_id)) |>
-  left_join(temp) |>
-  filter(in_cohort==1) |>
+  inner_join(temp) |>
   select(patient_id, hospitalization_id, encounter_block, in_cohort) |>
   distinct() |>
   collect()
@@ -1636,8 +1593,7 @@ cleanup(temp)
 #ICD code variable
 diagnosis <- clif_hospital_diagnosis |>
   mutate(hospitalization_id=as.character(hospitalization_id)) |>
-  left_join(cohort_ids) |>
-  filter(in_cohort==1) |>
+  inner_join(cohort_ids) |>
   collect() |>
   mutate(
     ards_code=fifelse(
@@ -1658,8 +1614,7 @@ diagnosis <- clif_hospital_diagnosis |>
 #Age, Discharge Category, Final Admission Dttm, Final Discharge Dttm
 hospitalization_vars <- clif_hospitalization |>
   mutate(hospitalization_id=as.character(hospitalization_id)) |>
-  left_join(cohort_ids) |>
-  filter(in_cohort==1) |>
+  inner_join(cohort_ids) |>
   select(patient_id, encounter_block, age_at_admission, final_admission_dttm, final_discharge_dttm, final_discharge_category) |>
   collect() |>
   mutate(in_hosp_death=fifelse(
@@ -1686,8 +1641,7 @@ cleanup(temp)
 #Was the Patient in a Procedural Area In the Week Prior to t_enrollment?
 hospital_location <- clif_adt |>
   mutate(hospitalization_id=as.character(hospitalization_id)) |>
-  left_join(cohort_hospitalization_ids) |>
-  filter(in_cohort==1) |>
+  inner_join(cohort_hospitalization_ids) |>
   left_join(cohort_times) |>
   arrange(patient_id, encounter_block, in_dttm) |>
   collect() |>
@@ -1997,9 +1951,8 @@ cleanup(temp_times)
 
 #Calculate Norepinephrine Equivalent
 pressor_data <- clif_medication_admin_continuous |>
-  filter(hospitalization_id %in% cohort_hospitalization_ids$hospitalization_id) |>
-  left_join(cohort_hospitalization_ids) |>
-  filter(in_cohort==1) |>
+  mutate(hospitalization_id =as.character(hospitalization_id)) |>
+  inner_join(cohort_hospitalization_ids) |>
   filter(med_group=='vasoactives') |>
   filter(!is.na(med_dose)) |>
   left_join(cohort_times) |>
@@ -2575,12 +2528,3 @@ gc()
 
 toc() #End R time
 ```
-
-
-
-```{r Run 01 file}
-## Run 01 RMD
-rmarkdown::render(input = paste0(file.path(project_root), "/code/01_local_CLIF_paralytics_incidence_analysis.Rmd"), output_file = "output.html")
-
-```
-

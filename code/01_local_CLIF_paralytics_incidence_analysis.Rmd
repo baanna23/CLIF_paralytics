@@ -219,6 +219,8 @@ next_exclusion <- data.frame(
   reason = "early prone"
 )
 
+consort <- read.csv(paste0(project_location, '/project_output_UPLOAD/', site,'_consort.csv'))
+consort <- consort[1:9, ]
 consort <- bind_rows(consort, next_exclusion)
 
 #For patient_ids with more than one encounter block, select one at random
@@ -394,11 +396,11 @@ write_csv(paralytics_per_period, paste0(project_location, '/project_output_UPLOA
 #Repeat per period per hospital
 #Create a Table of N of Patients and Number paralyzed Per Study period Per Hospital
 paralytics_per_period_by_hospital <- rose_analytic_df |> 
-  group_by(study_period, hospital_id) |>
+  group_by(study_period, hospital_id) |> 
+  filter(!is.na(hospital_id)) |>
   summarise(
     'site' = site,
     'n_hospitals' = n_hospitals,
-    'study_period' = max(study_period),
     'n_patients' = n(),
     'n_paralytics_12_hr' = sum(any_paralytic_12),
     'paralytics_12_hr_percent' = mean(any_paralytic_12),
@@ -426,7 +428,6 @@ paralytics_per_quarter <- rose_analytic_df |>
   summarise(
     'site' = site,
     'n_hospitals' = n_hospitals,
-    'study_period' = max(study_period),
     'n_patients' = n(),
     'sars_cov2_positive' = sum(sars_cov2_positive=='Positive', na.rm=T),
    'n_paralytics_12_hr' = sum(any_paralytic_12),
@@ -451,10 +452,10 @@ paralytics_per_quarter <- rose_analytic_df |>
 #Create a Table of N of Patients and Number paralyzed Per Study quarter Per Hospital
 paralytics_per_quarter_by_hospital <- rose_analytic_df |> 
   group_by(study_quarter, hospital_id) |>
+    filter(!is.na(hospital_id)) |>
   summarise(
     'site' = site,
     'n_hospitals' = n_hospitals,
-    'study_period' = max(study_period),
     'n_patients' = n(),
     'n_paralytics_12_hr' = sum(any_paralytic_12),
     'paralytics_12_hr_percent' = mean(any_paralytic_12),
@@ -483,7 +484,6 @@ prone_per_quarter <- rose_analytic_df |>
   summarise(
     'site' = site,
     'n_hospitals' = n_hospitals,
-    'study_period' = max(study_period),
     'n_patients' = n(),
     'sars_cov2_positive' = sum(sars_cov2_positive=='Positive', na.rm=T),
     'n_prone_48_hr' = sum(prone_48),
@@ -498,10 +498,10 @@ prone_per_quarter <- rose_analytic_df |>
 #Repeat Per Study Quarter per hospital
 prone_per_quarter_by_hospital <- rose_analytic_df |> 
   group_by(study_quarter, hospital_id) |>
+  filter(!is.na(hospital_id)) |>
   summarise(
     'site' = site,
     'n_hospitals' = n_hospitals,
-    'study_period' = max(study_period),
     'n_patients' = n(),
     'sars_cov2_positive' = sum(sars_cov2_positive=='Positive', na.rm=T),
     'n_prone_48_hr' = sum(prone_48),
@@ -522,7 +522,6 @@ p_and_p_per_quarter <- rose_analytic_df |>
   summarise(
     'site' = site,
     'n_hospitals' = n_hospitals,
-    'study_period' = max(study_period),
     'n_patients' = n(),
     'n_p_and_p_48_hr' = sum(p_and_p),
     'p_and_p_48_hr_percent' = mean(p_and_p),
@@ -533,10 +532,10 @@ p_and_p_per_quarter <- rose_analytic_df |>
 # #Repeat Per Study Quarter - by hospital
 p_and_p_per_quarter_by_hospital <- rose_analytic_df |>
   group_by(study_quarter, hospital_id) |>
+  filter(!is.na(hospital_id)) |>
   summarise(
     'site' = site,
     'n_hospitals' = n_hospitals,
-    'study_period' = max(study_period),
     'n_patients' = n(),
     'n_p_and_p_48_hr' = sum(p_and_p),
     'p_and_p_48_hr_percent' = mean(p_and_p),
@@ -551,7 +550,6 @@ paralytics_per_quarter_no_or <- rose_analytic_df |>
   summarise(
     'site' = site,
     'n_hospitals' = n_hospitals,
-    'study_period' = max(study_period),
     'n_patients' = n(),
     'sars_cov2_positive' = sum(sars_cov2_positive=='Positive', na.rm=T),
    'n_paralytics_12_hr' = sum(any_paralytic_12),
@@ -579,7 +577,6 @@ prone_per_quarter_no_or <- rose_analytic_df |>
   summarise(
     'site' = site,
     'n_hospitals' = n_hospitals,
-    'study_period' = max(study_period),
     'n_patients' = n(),
     'sars_cov2_positive' = sum(sars_cov2_positive=='Positive', na.rm=T),
     'n_prone_48_hr' = sum(prone_48),
@@ -598,7 +595,6 @@ p_and_p_per_quarter_no_or <- rose_analytic_df |>
   summarise(
     'site' = site,
     'n_hospitals' = n_hospitals,
-    'study_period' = max(study_period),
     'n_patients' = n(),
     'n_p_and_p_48_hr' = sum(p_and_p),
     'p_and_p_48_hr_percent' = mean(p_and_p),
@@ -702,6 +698,7 @@ to_tab <- c(
   'first_rose_fio2',
   'first_rose_peep',
   'severe_ards',
+  'ards_icd_10',
   'first_rose_mode',
   'sofa_score',
   'nee_pressor_dose',
@@ -755,6 +752,7 @@ factors_tab <- c(
   'or_before_enrollment',
   'nee_pressor_dose',
   'severe_ards',
+  'ards_icd_10',
   'first_rose_mode',
   'criteria',
   'deep_rass',
@@ -983,8 +981,9 @@ ggsave(paste0(site, '_alluvial.pdf'),
 ```{r Paralytics and Patient Outcomes in Table Form}
 rose_analytic_df <- rose_analytic_df |>
   mutate(study_period2 = study_period,
-  hospital_id2 = hospital_id,
-  any_paralytic_482 = any_paralytic_48)
+  hospital_id2 = as.factor(as.character(hospital_id)),
+  any_paralytic_482 = any_paralytic_48,
+  para_to_prone_numeric = as.numeric(para_to_prone))
 
 to_tab <- c(
   'any_paralytic_12',
@@ -998,11 +997,13 @@ to_tab <- c(
   'ett_to_paralytic',
   'first_rose_pf_all',
   'pfround_paralytic',
+  'prone_48',
   'min_ph',
  # 'total_continuous_para_hours_prior',
   'total_continuous_para_hours_post',
   'total_continuous_para_hours_all',
   'total_continuous_para_hours_48h', 
+ 'para_to_prone_numeric',
   'study_period2',
   'hospital_id2',
   'any_paralytic_482',
@@ -1022,9 +1023,12 @@ factors_tab <- c(
   'any_paralytic_ever',
   'in_hosp_death',
   'death_or_hospice',
+  'prone_48',
     'continous_paralytic_given'
-
 )
+
+rose_analytic_df <- rose_analytic_df |>
+  mutate(across(all_of(factors_tab), as.factor))
 
 # Get all continuous variables (those not in factors_tab)
 continuous_vars <- setdiff(to_tab, factors_tab)
@@ -1043,7 +1047,7 @@ if (n_periods >1) {
 } 
   
 #Now Create Table 2, One Stratified by paralytic use
-tab2 <- CreateTableOne(vars = to_tab, strata="any_paralytic_48", data=rose_analytic_df, factorVars = factors_tab, addOverall = TRUE)
+tab2 <- suppressWarnings(CreateTableOne(vars = to_tab, strata="any_paralytic_48", data=rose_analytic_df, factorVars = factors_tab, addOverall = TRUE))
 #print(tab2)
 tab2_excel <- as.data.frame(print(tab2, printToggle = FALSE, missing = TRUE)) |>
   mutate(site = site) |>
@@ -1062,7 +1066,7 @@ write.csv(tab2_excel, file=paste0(project_location, '/project_output_UPLOAD/', s
 
 #Now Create a Table 2, Stratified by Hospital
 if (n_hospitals>1) {
-tab2 <- CreateTableOne(vars = to_tab, strata="hospital_id", data=rose_analytic_df, factorVars = factors_tab, addOverall = TRUE) 
+tab2 <- suppressWarnings(CreateTableOne(vars = to_tab, strata="hospital_id", data=rose_analytic_df, factorVars = factors_tab, addOverall = TRUE))
 #print(tab2)
 tab2_excel <- as.data.frame(print(tab2, printToggle = FALSE, missing = TRUE)) |>
   mutate(site = site) |>
@@ -1071,7 +1075,7 @@ tab2_excel <- as.data.frame(print(tab2, printToggle = FALSE, missing = TRUE)) |>
   rename(percent_missing = Missing) |>
   select(-test)
 } else {
-tab2 <- CreateTableOne(vars = to_tab, data=rose_analytic_df, factorVars = factors_tab, addOverall = TRUE) 
+tab2 <- suppressWarnings(CreateTableOne(vars = to_tab, data=rose_analytic_df, factorVars = factors_tab, addOverall = TRUE))
 #print(tab2)
 tab2_excel <- as.data.frame(print(tab2, printToggle = FALSE, missing = TRUE)) |>
   mutate(site = site) |>
@@ -1152,6 +1156,7 @@ write.csv(tab2_gt, file=paste0(project_location, '/project_output_UPLOAD/', site
 if (n_hospitals>1) {
   tab2_gt <- rose_analytic_df |>
   select(all_of(to_tab), hospital_id, any_paralytic_48) |>
+      filter(!is.na(hospital_id)) |>
   tbl_strata(
     strata = hospital_id,
     .tbl_fun = ~ .x |>
@@ -1167,6 +1172,7 @@ write.csv(tab2_gt, file=paste0(project_location, '/project_output_UPLOAD/', site
 #median
   tab2_gt <- rose_analytic_df |>
   select(all_of(to_tab), hospital_id, any_paralytic_48) |>
+      filter(!is.na(hospital_id)) |>
   tbl_strata(
     strata = hospital_id,
     .tbl_fun = ~ .x |>
@@ -1178,6 +1184,24 @@ write.csv(tab2_gt, file=paste0(project_location, '/project_output_UPLOAD/', site
 tab2_gt <- as_tibble(tab2_gt)
 
 write.csv(tab2_gt, file=paste0(project_location, '/project_output_UPLOAD/', site, '_Table_paralytics_Outcomes_by_paralytics_hospital_median.csv'))
+
+
+#median - among proned patients
+  tab2_gt <- rose_analytic_df |>
+          filter(prone_all==1) |>
+  select(all_of(to_tab), hospital_id, any_paralytic_48) |>
+      filter(!is.na(hospital_id)) |>
+  tbl_strata(
+    strata = hospital_id,
+    .tbl_fun = ~ .x |>
+      tbl_summary(
+        by = any_paralytic_48,
+        statistic = list(all_continuous() ~ "{median} [{p25}, {p75}]"),
+        missing = "ifany"))
+
+tab2_gt <- as_tibble(tab2_gt)
+
+write.csv(tab2_gt, file=paste0(project_location, '/project_output_UPLOAD/', site, '_Table_paralytics_Outcomes_by_paralytics_hospital_median_proned.csv'))
 } 
 ```
 
@@ -1217,6 +1241,8 @@ model_table <- model_table |>
   rownames(model_table) <- NULL
 return(model_table)
 }
+
+rose_analytic_df$any_paralytic_48<- as.numeric(as.character(rose_analytic_df$any_paralytic_48))
 
 ```
 
@@ -1309,7 +1335,7 @@ write.csv(min_rass_plot, paste0(project_location, '/project_output_UPLOAD/', sit
 # proning 
 if (n_hospitals>1) {
 model_form_step <- any_paralytic_48 ~ factor(hospital_id) + prone_48 
-main_mod <- glm(model_form_step, data = rose_analytic_df, family=binomial)
+main_mod <- glm(model_form_step, data = rose_analytic_df %>% filter(!is.na(hospital_id)), family=binomial)
 } else {
 model_form_step <- any_paralytic_48 ~ prone_48 
 main_mod <- glm(model_form_step, data = rose_analytic_df, family=binomial, na.action = na.omit)
@@ -1322,7 +1348,7 @@ prone_summary <- model_summary_table(main_mod)
 if(n_periods==3){
   if (n_hospitals>1) {
   model_form_step <- any_paralytic_48 ~ factor(hospital_id) + (study_period)
-  main_mod <- glm(model_form_step, data = rose_analytic_df, family=binomial)
+  main_mod <- glm(model_form_step, data = rose_analytic_df %>% filter(!is.na(hospital_id)), family=binomial)
   } else {
   model_form_step <- any_paralytic_48 ~ factor(study_period)
   main_mod <- glm(model_form_step, data = rose_analytic_df, family=binomial, na.action = na.omit)
@@ -1334,7 +1360,7 @@ if(n_periods==3){
 # proning and study period - interaction
   if (n_hospitals>1) {
   model_form_step <- any_paralytic_48 ~ factor(hospital_id) + study_period + prone_48 + study_period*prone_48
-  main_mod <- glm(model_form_step, data = rose_analytic_df, family=binomial)
+  main_mod <- glm(model_form_step, data = rose_analytic_df %>% filter(!is.na(hospital_id)), family=binomial)
   } else {
   model_form_step <- any_paralytic_48 ~ study_period + prone_48 + study_period*prone_48
   main_mod <- glm(model_form_step, data = rose_analytic_df, family=binomial, na.action = na.omit)
@@ -1346,7 +1372,7 @@ if(n_periods==3){
 # proning and study period
   if (n_hospitals>1) {
   model_form_step <- any_paralytic_48 ~ factor(hospital_id) + study_period + prone_48 
-  main_mod <- glm(model_form_step, data = rose_analytic_df, family=binomial)
+  main_mod <- glm(model_form_step, data = rose_analytic_df %>% filter(!is.na(hospital_id)), family=binomial)
   } else {
   model_form_step <- any_paralytic_48 ~ study_period + prone_48 
   main_mod <- glm(model_form_step, data = rose_analytic_df, family=binomial, na.action = na.omit)
@@ -1359,7 +1385,7 @@ if(n_periods==3){
 # hypoxemia
 if (n_hospitals>1) {
 model_form_step <- any_paralytic_48 ~ factor(hospital_id) + first_rose_pf_all_scale 
-main_mod <- glm(model_form_step, data = rose_analytic_df, family=binomial)
+main_mod <- glm(model_form_step, data = rose_analytic_df %>% filter(!is.na(hospital_id)), family=binomial)
 } else {
 model_form_step <- any_paralytic_48 ~ first_rose_pf_all_scale 
 main_mod <- glm(model_form_step, data = rose_analytic_df, family=binomial, na.action = na.omit)
@@ -1370,7 +1396,7 @@ hypoxemia_summary <- model_summary_table(main_mod)
 
 if (n_hospitals>1) {
 model_form_step <- any_paralytic_48 ~ factor(hospital_id) + first_rose_pf_all_scale 
-main_mod <- glm(model_form_step, data = unproned_cohort, family=binomial)
+main_mod <- glm(model_form_step, data = unproned_cohort %>% filter(!is.na(hospital_id)), family=binomial)
 } else {
 model_form_step <- any_paralytic_48 ~ first_rose_pf_all_scale 
 main_mod <- glm(model_form_step, data = unproned_cohort, family=binomial, na.action = na.omit)
@@ -1381,7 +1407,7 @@ hypoxemia_summary_unproned <- model_summary_table(main_mod)
 
 if (n_hospitals>1) {
 model_form_step <- any_paralytic_48 ~ factor(hospital_id) + first_rose_pf_all_scale 
-main_mod <- glm(model_form_step, data = proned_cohort, family=binomial)
+main_mod <- glm(model_form_step, data = proned_cohort %>% filter(!is.na(hospital_id)), family=binomial)
 } else {
 model_form_step <- any_paralytic_48 ~ first_rose_pf_all_scale 
 main_mod <- glm(model_form_step, data = proned_cohort, family=binomial, na.action = na.omit)
@@ -1393,7 +1419,7 @@ hypoxemia_summary_proned <- model_summary_table(main_mod)
 # pH
 if (n_hospitals>1) {
 model_form_step <- any_paralytic_48 ~ factor(hospital_id) + min_ph_scale 
-main_mod <- glm(model_form_step, data = rose_analytic_df, family=binomial)
+main_mod <- glm(model_form_step, data = rose_analytic_df %>% filter(!is.na(hospital_id)), family=binomial)
 } else {
 model_form_step <- any_paralytic_48 ~ min_ph_scale 
 main_mod <- glm(model_form_step, data = rose_analytic_df, family=binomial, na.action = na.omit)
@@ -1404,7 +1430,7 @@ ph_summary <- model_summary_table(main_mod)
 
 if (n_hospitals>1) {
 model_form_step <- any_paralytic_48 ~ factor(hospital_id) + min_ph_scale 
-main_mod <- glm(model_form_step, data = unproned_cohort, family=binomial)
+main_mod <- glm(model_form_step, data = unproned_cohort %>% filter(!is.na(hospital_id)), family=binomial)
 } else {
 model_form_step <- any_paralytic_48 ~ min_ph_scale 
 main_mod <- glm(model_form_step, data = unproned_cohort, family=binomial, na.action = na.omit)
@@ -1415,7 +1441,7 @@ ph_summary_unproned <- model_summary_table(main_mod)
 
 if (n_hospitals>1) {
 model_form_step <- any_paralytic_48 ~ factor(hospital_id) + min_ph_scale 
-main_mod <- glm(model_form_step, data = proned_cohort, family=binomial)
+main_mod <- glm(model_form_step, data = proned_cohort %>% filter(!is.na(hospital_id)), family=binomial)
 } else {
 model_form_step <- any_paralytic_48 ~ min_ph_scale 
 main_mod <- glm(model_form_step, data = proned_cohort, family=binomial, na.action = na.omit)
@@ -1427,7 +1453,7 @@ ph_summary_proned <- model_summary_table(main_mod)
 # mv_obs
 if (n_hospitals>1) {
 model_form_step <- any_paralytic_48 ~ factor(hospital_id) + mv_obs_max_scale 
-main_mod <- glm(model_form_step, data = rose_analytic_df, family=binomial)
+main_mod <- glm(model_form_step, data = rose_analytic_df %>% filter(!is.na(hospital_id)), family=binomial)
 } else {
 model_form_step <- any_paralytic_48 ~ mv_obs_max_scale 
 main_mod <- glm(model_form_step, data = rose_analytic_df, family=binomial, na.action = na.omit)
@@ -1438,7 +1464,7 @@ mv_obs_summary <- model_summary_table(main_mod)
 
 if (n_hospitals>1) {
 model_form_step <- any_paralytic_48 ~ factor(hospital_id) + min_ph_scale 
-main_mod <- glm(model_form_step, data = unproned_cohort, family=binomial)
+main_mod <- glm(model_form_step, data = unproned_cohort %>% filter(!is.na(hospital_id)), family=binomial)
 } else {
 model_form_step <- any_paralytic_48 ~ min_ph_scale 
 main_mod <- glm(model_form_step, data = unproned_cohort, family=binomial, na.action = na.omit)
@@ -1449,7 +1475,7 @@ mv_obs_summary_unproned <- model_summary_table(main_mod)
 
 if (n_hospitals>1) {
 model_form_step <- any_paralytic_48 ~ factor(hospital_id) + min_ph_scale 
-main_mod <- glm(model_form_step, data = proned_cohort, family=binomial)
+main_mod <- glm(model_form_step, data = proned_cohort %>% filter(!is.na(hospital_id)), family=binomial)
 } else {
 model_form_step <- any_paralytic_48 ~ min_ph_scale 
 main_mod <- glm(model_form_step, data = proned_cohort, family=binomial, na.action = na.omit)
@@ -1461,7 +1487,7 @@ mv_obs_summary_proned <- model_summary_table(main_mod)
 # rr_obs
 if (n_hospitals>1) {
 model_form_step <- any_paralytic_48 ~ factor(hospital_id) + rr_diff_max_scale 
-main_mod <- glm(model_form_step, data = rose_analytic_df, family=binomial)
+main_mod <- glm(model_form_step, data = rose_analytic_df %>% filter(!is.na(hospital_id)), family=binomial)
 } else {
 model_form_step <- any_paralytic_48 ~ rr_diff_max_scale 
 main_mod <- glm(model_form_step, data = rose_analytic_df, family=binomial, na.action = na.omit)
@@ -1472,7 +1498,7 @@ rr_diff_summary <- model_summary_table(main_mod)
 
 if (n_hospitals>1) {
 model_form_step <- any_paralytic_48 ~ factor(hospital_id) + rr_diff_max_scale 
-main_mod <- glm(model_form_step, data = unproned_cohort, family=binomial)
+main_mod <- glm(model_form_step, data = unproned_cohort %>% filter(!is.na(hospital_id)), family=binomial)
 } else {
 model_form_step <- any_paralytic_48 ~ rr_diff_max_scale 
 main_mod <- glm(model_form_step, data = unproned_cohort, family=binomial, na.action = na.omit)
@@ -1483,7 +1509,7 @@ rr_diff_summary_unproned <- model_summary_table(main_mod)
 
 if (n_hospitals>1) {
 model_form_step <- any_paralytic_48 ~ factor(hospital_id) + rr_diff_max_scale 
-main_mod <- glm(model_form_step, data = proned_cohort, family=binomial)
+main_mod <- glm(model_form_step, data = proned_cohort %>% filter(!is.na(hospital_id)), family=binomial)
 } else {
 model_form_step <- any_paralytic_48 ~ rr_diff_max_scale 
 main_mod <- glm(model_form_step, data = proned_cohort, family=binomial, na.action = na.omit)
@@ -1495,7 +1521,7 @@ rr_diff_summary_proned <- model_summary_table(main_mod)
 # rass/agitation
 if (n_hospitals>1) {
 model_form_step <- any_paralytic_48 ~ factor(hospital_id) + max_rass12 
-main_mod <- glm(model_form_step, data = rose_analytic_df, family=binomial)
+main_mod <- glm(model_form_step, data = rose_analytic_df %>% filter(!is.na(hospital_id)), family=binomial)
 } else {
 model_form_step <- any_paralytic_48 ~ max_rass12 
 main_mod <- glm(model_form_step, data = rose_analytic_df, family=binomial, na.action = na.omit)
@@ -1506,7 +1532,7 @@ rass_max_summary <- model_summary_table(main_mod)
 
 if (n_hospitals>1) {
 model_form_step <- any_paralytic_48 ~ factor(hospital_id) + max_rass12 
-main_mod <- glm(model_form_step, data = unproned_cohort, family=binomial)
+main_mod <- glm(model_form_step, data = unproned_cohort %>% filter(!is.na(hospital_id)), family=binomial)
 } else {
 model_form_step <- any_paralytic_48 ~ max_rass12 
 main_mod <- glm(model_form_step, data = unproned_cohort, family=binomial, na.action = na.omit)
@@ -1517,7 +1543,7 @@ rass_max_summary_unproned <- model_summary_table(main_mod)
 
 if (n_hospitals>1) {
 model_form_step <- any_paralytic_48 ~ factor(hospital_id) + max_rass12 
-main_mod <- glm(model_form_step, data = proned_cohort, family=binomial)
+main_mod <- glm(model_form_step, data = proned_cohort %>% filter(!is.na(hospital_id)), family=binomial)
 } else {
 model_form_step <- any_paralytic_48 ~ max_rass12 
 main_mod <- glm(model_form_step, data = proned_cohort, family=binomial, na.action = na.omit)
@@ -1529,7 +1555,7 @@ rass_max_summary_proned <- model_summary_table(main_mod)
 # rass/deep sedation
 if (n_hospitals>1) {
 model_form_step <- any_paralytic_48 ~ factor(hospital_id) + min_rass12 
-main_mod <- glm(model_form_step, data = rose_analytic_df, family=binomial)
+main_mod <- glm(model_form_step, data = rose_analytic_df %>% filter(!is.na(hospital_id)), family=binomial)
 } else {
 model_form_step <- any_paralytic_48 ~ min_rass12 
 main_mod <- glm(model_form_step, data = rose_analytic_df, family=binomial, na.action = na.omit)
@@ -1540,7 +1566,7 @@ rass_min_summary <- model_summary_table(main_mod)
 
 if (n_hospitals>1) {
 model_form_step <- any_paralytic_48 ~ factor(hospital_id) + min_rass12 
-main_mod <- glm(model_form_step, data = unproned_cohort, family=binomial)
+main_mod <- glm(model_form_step, data = unproned_cohort %>% filter(!is.na(hospital_id)), family=binomial)
 } else {
 model_form_step <- any_paralytic_48 ~ min_rass12 
 main_mod <- glm(model_form_step, data = unproned_cohort, family=binomial, na.action = na.omit)
@@ -1551,7 +1577,7 @@ rass_min_summary_unproned <- model_summary_table(main_mod)
 
 if (n_hospitals>1) {
 model_form_step <- any_paralytic_48 ~ factor(hospital_id) + min_rass12 
-main_mod <- glm(model_form_step, data = proned_cohort, family=binomial)
+main_mod <- glm(model_form_step, data = proned_cohort %>% filter(!is.na(hospital_id)), family=binomial)
 } else {
 model_form_step <- any_paralytic_48 ~ min_rass12 
 main_mod <- glm(model_form_step, data = proned_cohort, family=binomial, na.action = na.omit)
@@ -1667,9 +1693,10 @@ safe_glm <- safely(function(df, predictor_var) {
 })
 
 #proning
-models_by_hospital_prone <- rose_analytic_df %>%
-  group_by(hospital_id) %>%
-  nest() %>%
+models_by_hospital_prone <- rose_analytic_df |>
+  group_by(hospital_id) |>
+  filter(!is.na(hospital_id)) |>
+  nest() |>
   mutate(fit = map(data, ~ safe_glm(.x, "prone_48")),
     model = map(fit, "result"),
     error = map(fit, "error"),
@@ -1679,8 +1706,8 @@ models_by_hospital_prone <- rose_analytic_df %>%
         tibble()
       } else {
         tidy(.x, exponentiate = TRUE, conf.int = TRUE)
-      }})) %>%
-  select(hospital_id, n, results) %>%
+      }})) |>
+  select(hospital_id, n, results) |>
   unnest(results)
 
 models_by_icu_prone <- rose_analytic_df %>%
@@ -1701,6 +1728,7 @@ models_by_icu_prone <- rose_analytic_df %>%
 
 models_by_hospital_icu_prone <- rose_analytic_df %>%
   group_by(hospital_id, enrollment_location_type) %>%
+    filter(!is.na(hospital_id)) %>%
   nest() %>%
   mutate(fit = map(data, ~ safe_glm(.x, "prone_48")),
     model = map(fit, "result"),
@@ -1718,6 +1746,7 @@ models_by_hospital_icu_prone <- rose_analytic_df %>%
 #study period
 models_by_hospital_period <- rose_analytic_df %>%
   group_by(hospital_id) %>%
+    filter(!is.na(hospital_id)) %>%
   nest() %>%
   mutate(fit = map(data, ~ safe_glm(.x, "study_period")),
     model = map(fit, "result"),
@@ -1750,6 +1779,7 @@ models_by_icu_period <- rose_analytic_df %>%
 
 models_by_hospital_icu_period <- rose_analytic_df %>%
   group_by(hospital_id, enrollment_location_type) %>%
+    filter(!is.na(hospital_id)) %>%
   nest() %>%
   mutate(fit = map(data, ~ safe_glm(.x, "study_period")),
     model = map(fit, "result"),
@@ -1767,6 +1797,7 @@ models_by_hospital_icu_period <- rose_analytic_df %>%
 #proning and study period
 models_by_hospital_period_prone <- rose_analytic_df %>%
   group_by(hospital_id) %>%
+    filter(!is.na(hospital_id)) %>%
   nest() %>%
   mutate(fit = map(data, ~ safe_glm(.x, c("study_period", "prone_48"))),
     model = map(fit, "result"),
@@ -1799,6 +1830,7 @@ models_by_icu_period_prone <- rose_analytic_df %>%
 
 models_by_hospital_icu_period_prone <- rose_analytic_df %>%
   group_by(hospital_id, enrollment_location_type) %>%
+    filter(!is.na(hospital_id)) %>%
   nest() %>%
   mutate(fit = map(data, ~ safe_glm(.x, c("study_period", "prone_48"))),
     model = map(fit, "result"),
@@ -1816,6 +1848,7 @@ models_by_hospital_icu_period_prone <- rose_analytic_df %>%
 #hypoxia
 models_by_hospital_hypoxia <- rose_analytic_df %>%
   group_by(hospital_id) %>%
+    filter(!is.na(hospital_id)) %>%
   nest() %>%
   mutate(fit = map(data, ~ safe_glm(.x, c("first_rose_pf_all_scale"))),
     model = map(fit, "result"),
@@ -1848,6 +1881,7 @@ models_by_icu_hypoxia <- rose_analytic_df %>%
 
 models_by_hospital_icu_hypoxia <- rose_analytic_df %>%
   group_by(hospital_id, enrollment_location_type) %>%
+    filter(!is.na(hospital_id)) %>%
   nest() %>%
   mutate(fit = map(data, ~ safe_glm(.x, c("first_rose_pf_all_scale"))),
     model = map(fit, "result"),
@@ -1865,6 +1899,7 @@ models_by_hospital_icu_hypoxia <- rose_analytic_df %>%
 #hypoxia
 models_by_hospital_hypoxia_unproned <- unproned_cohort %>%
   group_by(hospital_id) %>%
+    filter(!is.na(hospital_id)) %>%
   nest() %>%
   mutate(fit = map(data, ~ safe_glm(.x, c("first_rose_pf_all_scale"))),
     model = map(fit, "result"),
@@ -1897,6 +1932,7 @@ models_by_icu_hypoxia_unproned <- unproned_cohort %>%
 
 models_by_hospital_icu_hypoxia_unproned <- unproned_cohort %>%
   group_by(hospital_id, enrollment_location_type) %>%
+    filter(!is.na(hospital_id)) %>%
   nest() %>%
   mutate(fit = map(data, ~ safe_glm(.x, c("first_rose_pf_all_scale"))),
     model = map(fit, "result"),
@@ -1914,6 +1950,7 @@ models_by_hospital_icu_hypoxia_unproned <- unproned_cohort %>%
 #hypoxia
 models_by_hospital_hypoxia_proned <- proned_cohort %>%
   group_by(hospital_id) %>%
+    filter(!is.na(hospital_id)) %>%
   nest() %>%
   mutate(fit = map(data, ~ safe_glm(.x, c("first_rose_pf_all_scale"))),
     model = map(fit, "result"),
@@ -1946,6 +1983,7 @@ models_by_icu_hypoxia_proned <- proned_cohort %>%
 
 models_by_hospital_icu_hypoxia_proned <- proned_cohort %>%
   group_by(hospital_id, enrollment_location_type) %>%
+    filter(!is.na(hospital_id)) %>%
   nest() %>%
   mutate(
     fit = map(data, ~ safe_glm(.x, c("first_rose_pf_all_scale"))),
@@ -1966,6 +2004,7 @@ models_by_hospital_icu_hypoxia_proned <- proned_cohort %>%
 # pH
 models_by_hospital_ph <- rose_analytic_df %>%
   group_by(hospital_id) %>%
+    filter(!is.na(hospital_id)) %>%
   nest() %>%
   mutate(fit = map(data, ~ safe_glm(.x, c("min_ph_scale"))),
     model = map(fit, "result"),
@@ -1982,6 +2021,7 @@ models_by_hospital_ph <- rose_analytic_df %>%
 
 models_by_hospital_ph_unproned <- unproned_cohort %>%
   group_by(hospital_id) %>%
+    filter(!is.na(hospital_id)) %>%
   nest() %>%
   mutate(fit = map(data, ~ safe_glm(.x, c("min_ph_scale"))),
     model = map(fit, "result"),
@@ -2084,7 +2124,7 @@ write.csv(main_table, paste0(project_location, '/project_output_UPLOAD/', site, 
 if(n_periods==3){
   if (n_hospitals>1) {
   model_form_step <- any_paralytic_48 ~ factor(hospital_id) + (study_period)
-  main_mod <- glm(model_form_step, data = unproned_cohort, family=binomial)
+  main_mod <- glm(model_form_step, data = unproned_cohort  %>% filter(!is.na(hospital_id)), family=binomial)
   } else {
   model_form_step <- any_paralytic_48 ~ factor(study_period)
   main_mod <- glm(model_form_step, data = unproned_cohort, family=binomial, na.action = na.omit)
@@ -2097,7 +2137,7 @@ if(n_periods==3){
 # hypoxemia
 if (n_hospitals>1) {
 model_form_step <- any_paralytic_48 ~ factor(hospital_id) + first_rose_pf_all_scale 
-main_mod <- glm(model_form_step, data = unproned_cohort, family=binomial)
+main_mod <- glm(model_form_step, data = unproned_cohort %>% filter(!is.na(hospital_id)), family=binomial)
 } else {
 model_form_step <- any_paralytic_48 ~ first_rose_pf_all_scale 
 main_mod <- glm(model_form_step, data = unproned_cohort, family=binomial, na.action = na.omit)
@@ -2109,7 +2149,7 @@ hypoxemia_summary_unproned <- model_summary_table(main_mod)
 # mv_obs
 if (n_hospitals>1) {
 model_form_step <- any_paralytic_48 ~ factor(hospital_id) + mv_obs_max_scale 
-main_mod <- glm(model_form_step, data = unproned_cohort, family=binomial)
+main_mod <- glm(model_form_step, data = unproned_cohort %>% filter(!is.na(hospital_id)), family=binomial)
 } else {
 model_form_step <- any_paralytic_48 ~ mv_obs_max_scale 
 main_mod <- glm(model_form_step, data = unproned_cohort, family=binomial, na.action = na.omit)
@@ -2121,7 +2161,7 @@ mv_obs_summary_unproned <- model_summary_table(main_mod)
 # rr_obs
 if (n_hospitals>1) {
 model_form_step <- any_paralytic_48 ~ factor(hospital_id) + rr_diff_max_scale 
-main_mod <- glm(model_form_step, data = unproned_cohort, family=binomial)
+main_mod <- glm(model_form_step, data = unproned_cohort %>% filter(!is.na(hospital_id)), family=binomial)
 } else {
 model_form_step <- any_paralytic_48 ~ rr_diff_max_scale 
 main_mod <- glm(model_form_step, data = unproned_cohort, family=binomial, na.action = na.omit)
@@ -2134,7 +2174,7 @@ rr_diff_summary_unproned <- model_summary_table(main_mod)
 # rass/agitation
 if (n_hospitals>1) {
 model_form_step <- any_paralytic_48 ~ factor(hospital_id) + max_rass12 
-main_mod <- glm(model_form_step, data = unproned_cohort, family=binomial)
+main_mod <- glm(model_form_step, data = unproned_cohort %>% filter(!is.na(hospital_id)), family=binomial)
 } else {
 model_form_step <- any_paralytic_48 ~ max_rass12 
 main_mod <- glm(model_form_step, data = unproned_cohort, family=binomial, na.action = na.omit)
@@ -2147,7 +2187,7 @@ rass_max_summary_unproned <- model_summary_table(main_mod)
 # rass/deep sedation
 if (n_hospitals>1) {
 model_form_step <- any_paralytic_48 ~ factor(hospital_id) + min_rass 
-main_mod <- glm(model_form_step, data = unproned_cohort, family=binomial)
+main_mod <- glm(model_form_step, data = unproned_cohort %>% filter(!is.na(hospital_id)), family=binomial)
 } else {
 model_form_step <- any_paralytic_48 ~ min_rass 
 main_mod <- glm(model_form_step, data = unproned_cohort, family=binomial, na.action = na.omit)
@@ -2240,6 +2280,7 @@ write.csv(main_table, paste0(project_location, '/project_output_UPLOAD/', site, 
 models_by_hospital_prone_no_or <- rose_analytic_df %>%
   filter(or_before_enrollment==0) %>%
   group_by(hospital_id) %>%
+  filter(!is.na(hospital_id)) %>%
   nest() %>%
   mutate(fit = map(data, ~ safe_glm(.x, "prone_48")),
     model = map(fit, "result"),
@@ -2258,6 +2299,7 @@ models_by_hospital_prone_no_or <- rose_analytic_df %>%
 models_by_hospital_hypoxia_no_or <- rose_analytic_df %>%
     filter(or_before_enrollment==0) %>%
   group_by(hospital_id) %>%
+  filter(!is.na(hospital_id)) %>%
   nest() %>%
   mutate(fit = map(data, ~ safe_glm(.x, c("first_rose_pf_all_scale"))),
     model = map(fit, "result"),
@@ -2276,6 +2318,7 @@ models_by_hospital_hypoxia_no_or <- rose_analytic_df %>%
 models_by_hospital_prone_no_covid <- rose_analytic_df %>%
   filter(covid_positive!=1) %>%
   group_by(hospital_id) %>%
+  filter(!is.na(hospital_id)) %>%
   nest() %>%
   mutate(fit = map(data, ~ safe_glm(.x, "prone_48")),
     model = map(fit, "result"),
@@ -2294,6 +2337,7 @@ models_by_hospital_prone_no_covid <- rose_analytic_df %>%
 models_by_hospital_hypoxia_no_covid <- rose_analytic_df %>%
   filter(covid_positive!=1) %>%
   group_by(hospital_id) %>%
+  filter(!is.na(hospital_id)) %>%
   nest() %>%
   mutate(fit = map(data, ~ safe_glm(.x, c("first_rose_pf_all_scale"))),
     model = map(fit, "result"),
@@ -2312,6 +2356,7 @@ models_by_hospital_hypoxia_no_covid <- rose_analytic_df %>%
 models_by_hospital_prone_now <- rose_analytic_df %>%
   filter(study_period=="Post-ROSE/Post-COVID") %>%
   group_by(hospital_id) %>%
+  filter(!is.na(hospital_id)) %>%
   nest() %>%
   mutate(fit = map(data, ~ safe_glm(.x, "prone_48")),
     model = map(fit, "result"),
@@ -2330,6 +2375,7 @@ models_by_hospital_prone_now <- rose_analytic_df %>%
 models_by_hospital_hypoxia_now <- rose_analytic_df %>%
   filter(study_period=="Post-ROSE/Post-COVID") %>%
   group_by(hospital_id) %>%
+  filter(!is.na(hospital_id)) %>%
   nest() %>%
   mutate(fit = map(data, ~ safe_glm(.x, c("first_rose_pf_all_scale"))),
     model = map(fit, "result"),
@@ -2348,6 +2394,7 @@ models_by_hospital_hypoxia_now <- rose_analytic_df %>%
 models_by_hospital_prone_ards <- rose_analytic_df %>%
   filter(ards_icd_10==1) %>%
   group_by(hospital_id) %>%
+  filter(!is.na(hospital_id)) %>%
   nest() %>%
   mutate(fit = map(data, ~ safe_glm(.x, "prone_48")),
     model = map(fit, "result"),
@@ -2366,6 +2413,7 @@ models_by_hospital_prone_ards <- rose_analytic_df %>%
 models_by_hospital_hypoxia_ards <- rose_analytic_df %>%
   filter(ards_icd_10==1) %>%
   group_by(hospital_id) %>%
+  filter(!is.na(hospital_id)) %>%
   nest() %>%
   mutate(fit = map(data, ~ safe_glm(.x, c("first_rose_pf_all_scale"))),
     model = map(fit, "result"),
@@ -2384,6 +2432,7 @@ models_by_hospital_hypoxia_ards <- rose_analytic_df %>%
 models_by_hospital_prone_severe <- rose_analytic_df %>%
   filter(severe_ards==1) %>%
   group_by(hospital_id) %>%
+  filter(!is.na(hospital_id)) %>%
   nest() %>%
   mutate(fit = map(data, ~ safe_glm(.x, "prone_48")),
     model = map(fit, "result"),
@@ -2402,6 +2451,7 @@ models_by_hospital_prone_severe <- rose_analytic_df %>%
 models_by_hospital_hypoxia_severe <- rose_analytic_df %>%
   filter(severe_ards==1) %>%
   group_by(hospital_id) %>%
+  filter(!is.na(hospital_id)) %>%
   nest() %>%
   mutate(fit = map(data, ~ safe_glm(.x, c("first_rose_pf_all_scale"))),
     model = map(fit, "result"),
@@ -2419,6 +2469,7 @@ models_by_hospital_hypoxia_severe <- rose_analytic_df %>%
 #hypoxia
 models_by_hospital_hypoxia_unproned <- unproned_cohort %>%
   group_by(hospital_id) %>%
+  filter(!is.na(hospital_id)) %>%
   nest() %>%
   mutate(fit = map(data, ~ safe_glm(.x, c("first_rose_pf_all_scale"))),
     model = map(fit, "result"),
@@ -2438,6 +2489,7 @@ if(n_periods==3){
 models_by_hospital_period_no_or <- rose_analytic_df %>%
   filter(or_before_enrollment==0) %>%
   group_by(hospital_id) %>%
+  filter(!is.na(hospital_id)) %>%
   nest() %>%
   mutate(fit = map(data, ~ safe_glm(.x, "study_period")),
     model = map(fit, "result"),
@@ -2456,6 +2508,7 @@ models_by_hospital_period_no_or <- rose_analytic_df %>%
 models_by_hospital_period_prone_no_or <- rose_analytic_df %>%
     filter(or_before_enrollment==0) %>%
   group_by(hospital_id) %>%
+  filter(!is.na(hospital_id)) %>%
   nest() %>%
   mutate(fit = map(data, ~ safe_glm(.x, c("study_period", "prone_48"))),
     model = map(fit, "result"),
@@ -2474,6 +2527,7 @@ models_by_hospital_period_prone_no_or <- rose_analytic_df %>%
 models_by_hospital_period_no_covid <- rose_analytic_df %>%
   filter(covid_positive!=1) %>%
   group_by(hospital_id) %>%
+  filter(!is.na(hospital_id)) %>%
   nest() %>%
   mutate(fit = map(data, ~ safe_glm(.x, "study_period")),
     model = map(fit, "result"),
@@ -2492,6 +2546,7 @@ models_by_hospital_period_no_covid <- rose_analytic_df %>%
 models_by_hospital_period_prone_no_covid <- rose_analytic_df %>%
   filter(covid_positive!=1) %>%
   group_by(hospital_id) %>%
+  filter(!is.na(hospital_id)) %>%
   nest() %>%
   mutate(fit = map(data, ~ safe_glm(.x, c("study_period", "prone_48"))),
     model = map(fit, "result"),
@@ -2510,6 +2565,7 @@ models_by_hospital_period_prone_no_covid <- rose_analytic_df %>%
 models_by_hospital_period_ards <- rose_analytic_df %>%
   filter(ards_icd_10==1) %>%
   group_by(hospital_id) %>%
+  filter(!is.na(hospital_id)) %>%
   nest() %>%
   mutate(fit = map(data, ~ safe_glm(.x, "study_period")),
     model = map(fit, "result"),
@@ -2528,6 +2584,7 @@ models_by_hospital_period_ards <- rose_analytic_df %>%
 models_by_hospital_period_prone_ards <- rose_analytic_df %>%
   filter(ards_icd_10==1) %>%
   group_by(hospital_id) %>%
+  filter(!is.na(hospital_id)) %>%
   nest() %>%
   mutate(fit = map(data, ~ safe_glm(.x, c("study_period", "prone_48"))),
     model = map(fit, "result"),
@@ -2547,6 +2604,7 @@ models_by_hospital_period_prone_ards <- rose_analytic_df %>%
 models_by_hospital_period_severe <- rose_analytic_df %>%
   filter(severe_ards==1) %>%
   group_by(hospital_id) %>%
+  filter(!is.na(hospital_id)) %>%
   nest() %>%
   mutate(fit = map(data, ~ safe_glm(.x, "study_period")),
     model = map(fit, "result"),
@@ -2565,6 +2623,7 @@ models_by_hospital_period_severe <- rose_analytic_df %>%
 models_by_hospital_period_prone_severe <- rose_analytic_df %>%
   filter(severe_ards==1) %>%
   group_by(hospital_id) %>%
+  filter(!is.na(hospital_id)) %>%
   nest() %>%
   mutate(fit = map(data, ~ safe_glm(.x, c("study_period", "prone_48"))),
     model = map(fit, "result"),
@@ -2583,6 +2642,7 @@ models_by_hospital_period_prone_severe <- rose_analytic_df %>%
 #study period
 models_by_hospital_period_unproned <- unproned_cohort %>%
   group_by(hospital_id) %>%
+  filter(!is.na(hospital_id)) %>%
   nest() %>%
   mutate(fit = map(data, ~ safe_glm(.x, "study_period")),
     model = map(fit, "result"),
@@ -2681,7 +2741,7 @@ if(n_periods==3){
 if (n_hospitals>1) {
 model_form_step <- any_paralytic_48 ~ factor(hospital_id) + study_period + bmi_scale + age_scale + sofa_score_scale + race_ethnicity + or_before_enrollment + first_rose_fio2_scale + first_rose_peep_scale + criteria + first_rose_pf_all_scale + nee_pressor_dose + ett_to_enrolled + female  + enrollment_location_type  + deep_rass_max + rr_diff_max_scale + covid_positive + tv_cc_kg_scale  + mv_obs_max_scale  + plat_max_scale + compliance_scale + prone_48
 main_mod <- glm(model_form_step,
-          data = rose_analytic_df, 
+          data = rose_analytic_df %>% filter(!is.na(hospital_id)), 
           family=binomial)
 } else {
 model_form_step <- any_paralytic_48 ~ study_period + bmi_scale + age_scale + sofa_score_scale + race_ethnicity + or_before_enrollment + first_rose_fio2_scale + first_rose_peep_scale + criteria + first_rose_pf_all_scale + nee_pressor_dose + ett_to_enrolled + female  + enrollment_location_type  + deep_rass_max + rr_diff_max_scale + covid_positive + tv_cc_kg_scale  + mv_obs_max_scale  + plat_max_scale + compliance_scale + prone_48
@@ -2698,7 +2758,7 @@ main_mod_proning_summary <- model_summary_table(main_mod)
 if (n_hospitals>1) {
 model_form_step <- any_paralytic_48 ~ factor(hospital_id) +  bmi_scale + age_scale + sofa_score_scale + race_ethnicity + or_before_enrollment + first_rose_fio2_scale + first_rose_peep_scale + criteria + first_rose_pf_all_scale + nee_pressor_dose + ett_to_enrolled + female  + enrollment_location_type  + deep_rass_max + rr_diff_max_scale + covid_positive + tv_cc_kg_scale  + mv_obs_max_scale  + plat_max_scale + compliance_scale + prone_48
 main_mod <- glm(model_form_step,
-          data = rose_analytic_df, 
+          data = rose_analytic_df %>% filter(!is.na(hospital_id)), 
           family=binomial)
 } else {
 model_form_step <- any_paralytic_48 ~  bmi_scale + age_scale + sofa_score_scale + race_ethnicity + or_before_enrollment + first_rose_fio2_scale + first_rose_peep_scale + criteria + first_rose_pf_all_scale + nee_pressor_dose + ett_to_enrolled + female  + enrollment_location_type  + deep_rass_max + rr_diff_max_scale + covid_positive + tv_cc_kg_scale  + mv_obs_max_scale  + plat_max_scale + compliance_scale + prone_48
@@ -2715,7 +2775,7 @@ main_mod_proning_summary <- model_summary_table(main_mod)
 if (n_hospitals>1) {
 model_form_step <- any_paralytic_48 ~ factor(hospital_id) + bmi_scale + age_scale + sofa_score_scale + race_ethnicity + or_before_enrollment + first_rose_fio2_scale + first_rose_peep_scale +  criteria + first_rose_pf_all_scale + nee_pressor_dose + ett_to_enrolled + female  + enrollment_location_type  + deep_rass_max + rr_diff_max_scale + covid_positive + tv_cc_kg_scale  + mv_obs_max_scale  + plat_max_scale + compliance_scale+ prone_48
 main_mod_current <- glm(model_form_step,
-          data = subset(rose_analytic_df, t_rose_first>=as.POSIXct("2022-01-01", tz=site_time_zone)), 
+          data = rose_analytic_df %>% filter(!is.na(hospital_id) & t_rose_first>=as.POSIXct("2022-01-01", tz=site_time_zone)), 
           family=binomial)
 } else {
 model_form_step <- any_paralytic_48 ~ bmi_scale + age_scale + sofa_score_scale + race_ethnicity + or_before_enrollment + first_rose_fio2_scale + first_rose_peep_scale +  criteria + first_rose_pf_all_scale + nee_pressor_dose + ett_to_enrolled + female  + enrollment_location_type  + deep_rass_max + rr_diff_max_scale + covid_positive + tv_cc_kg_scale  + mv_obs_max_scale  + plat_max_scale + compliance_scale+ prone_48
@@ -2732,7 +2792,7 @@ main_mod_summary_sa4 <- model_summary_table(main_mod_current)
 if (n_hospitals>1) {
     model_form_step <- any_paralytic_48 ~ factor(hospital_id) +  or_before_enrollment + first_rose_fio2_scale + first_rose_peep_scale  + first_rose_pf_all_scale + deep_rass_max + rr_diff_max_scale   + mv_obs_max_scale  + plat_max_scale + compliance_scale + prone_48 + ph_715
     main_mod <- glm(model_form_step,
-                    data = rose_analytic_df, 
+                    data = rose_analytic_df %>% filter(!is.na(hospital_id)), 
                     family=binomial)
   } else {
     model_form_step <- any_paralytic_48 ~  or_before_enrollment + first_rose_fio2_scale + first_rose_peep_scale  + first_rose_pf_all_scale +  deep_rass_max + rr_diff_max_scale   + mv_obs_max_scale  + plat_max_scale + compliance_scale + prone_48 + ph_715
@@ -2765,7 +2825,7 @@ write.csv(main_table, paste0(project_location, '/project_output_UPLOAD/', site, 
 #Mortality - add landmark analysis to address immortal time bias
 if (n_hospitals>1) {
 model_form_step <- death_or_hospice ~ factor(hospital_id) + any_paralytic_48
-  main_mod <- glm(model_form_step, data = rose_analytic_df, family=binomial)
+  main_mod <- glm(model_form_step, data = rose_analytic_df %>% filter(!is.na(hospital_id)), family=binomial)
 } else {
 model_form_step <- death_or_hospice ~ factor(any_paralytic_48)
 main_mod <- glm(model_form_step, data = rose_analytic_df, family=binomial, na.action = na.omit)
@@ -2777,7 +2837,7 @@ mortality_univariate <- model_summary_table(main_mod)
 #multivariate
 if (n_hospitals>1) {
 model_form_step <- death_or_hospice ~ factor(hospital_id) + any_paralytic_48  + age_scale + sofa_score_scale + or_before_enrollment + first_rose_pf_all_scale + nee_pressor_dose + covid_positive +prone_48
-  main_mod <- glm(model_form_step, data = rose_analytic_df, family=binomial)
+  main_mod <- glm(model_form_step, data = rose_analytic_df %>% filter(!is.na(hospital_id)), family=binomial)
 } else {
 model_form_step <- death_or_hospice ~ factor(any_paralytic_48) + age_scale + sofa_score_scale + or_before_enrollment + first_rose_pf_all_scale + nee_pressor_dose + covid_positive +prone_48
 main_mod <- glm(model_form_step, data = rose_analytic_df, family=binomial, na.action = na.omit)
@@ -2786,6 +2846,16 @@ main_mod <- glm(model_form_step, data = rose_analytic_df, family=binomial, na.ac
 summary(main_mod)
 mortality_multivariate <- model_summary_table(main_mod)
 
+if (n_hospitals>1) {
+model_form_step <- death_or_hospice ~ factor(hospital_id) + factor(any_paralytic_48) + bmi_scale + age_scale + sofa_score_scale  + or_before_enrollment + first_rose_pf_all_scale + nee_pressor_dose + female  + deep_rass_max + covid_positive + compliance_scale + prone_48
+  main_mod <- glm(model_form_step, data = rose_analytic_df %>% filter(!is.na(hospital_id)), family=binomial)
+} else {
+model_form_step <- death_or_hospice ~  factor(any_paralytic_48) + bmi_scale + age_scale + sofa_score_scale  + or_before_enrollment + first_rose_pf_all_scale + nee_pressor_dose + female  + deep_rass_max + covid_positive + compliance_scale + prone_48
+main_mod <- glm(model_form_step, data = rose_analytic_df, family=binomial, na.action = na.omit)
+}
+
+summary(main_mod)
+mortality_multivariate_2 <- model_summary_table(main_mod)
 
 #landmark analysis - subset of patients alive/in cohort at 48h
 rose_analytic_df<- rose_analytic_df %>% mutate(incohort_48h= fifelse(final_discharge_dttm> t_rose_first + dhours(48), 1, 0))
@@ -2793,7 +2863,7 @@ landmark <- rose_analytic_df %>% filter(incohort_48h==1)
 
 if (n_hospitals>1) {
 model_form_step <- death_or_hospice ~ factor(hospital_id) + any_paralytic_48
-  main_mod <- glm(model_form_step, data = landmark, family=binomial)
+  main_mod <- glm(model_form_step, data = landmark %>% filter(!is.na(hospital_id)), family=binomial)
 } else {
 model_form_step <- death_or_hospice ~ factor(any_paralytic_48)
 main_mod <- glm(model_form_step, data = landmark, family=binomial, na.action = na.omit)
@@ -2805,7 +2875,7 @@ mortality_univariate_la <- model_summary_table(main_mod)
 #adjust 
 if (n_hospitals>1) {
 model_form_step <- death_or_hospice ~ factor(hospital_id) + any_paralytic_48  + age_scale + sofa_score_scale + or_before_enrollment + first_rose_pf_all_scale + nee_pressor_dose + covid_positive +prone_48
-  main_mod <- glm(model_form_step, data = landmark, family=binomial)
+  main_mod <- glm(model_form_step, data = landmark %>% filter(!is.na(hospital_id)), family=binomial)
 } else {
 model_form_step <- death_or_hospice ~ factor(any_paralytic_48) + age_scale + sofa_score_scale + or_before_enrollment + first_rose_pf_all_scale + nee_pressor_dose + covid_positive +prone_48
 main_mod <- glm(model_form_step, data = landmark, family=binomial, na.action = na.omit)
@@ -2814,16 +2884,45 @@ main_mod <- glm(model_form_step, data = landmark, family=binomial, na.action = n
 summary(main_mod)
 mortality_multivariate_la <- model_summary_table(main_mod)
 
+#adjust 
+if (n_hospitals>1) {
+model_form_step <- death_or_hospice ~ factor(hospital_id) + any_paralytic_48  + age_scale + sofa_score_scale + or_before_enrollment + first_rose_pf_all_scale + nee_pressor_dose + covid_positive +prone_48 + ards_icd_10
+  main_mod <- glm(model_form_step, data = landmark %>% filter(!is.na(hospital_id)), family=binomial)
+} else {
+model_form_step <- death_or_hospice ~ factor(any_paralytic_48) + age_scale + sofa_score_scale + or_before_enrollment + first_rose_pf_all_scale + nee_pressor_dose + covid_positive +prone_48+ ards_icd_10
+main_mod <- glm(model_form_step, data = landmark, family=binomial, na.action = na.omit)
+}
+
+summary(main_mod)
+mortality_multivariate_la <- model_summary_table(main_mod)
+
+if (n_hospitals>1) {
+model_form_step <- death_or_hospice ~ factor(hospital_id) + factor(any_paralytic_48) + bmi_scale + age_scale + sofa_score_scale  + or_before_enrollment + first_rose_pf_all_scale + nee_pressor_dose + female  + deep_rass_max + covid_positive + compliance_scale + prone_48 +ards_icd_10
+  main_mod <- glm(model_form_step, data = landmark %>% filter(!is.na(hospital_id)), family=binomial)
+} else {
+model_form_step <- death_or_hospice ~  factor(any_paralytic_48) + bmi_scale + age_scale + sofa_score_scale  + or_before_enrollment + first_rose_pf_all_scale + nee_pressor_dose + female  + factor(deep_rass_max) + covid_positive + compliance_scale + prone_48+ards_icd_10
+main_mod <- glm(model_form_step, data = landmark, family=binomial, na.action = na.omit)
+}
+
+summary(main_mod)
+mortality_multivariate_la_2 <- model_summary_table(main_mod)
+
+
+
 #Summary Table With All Models
 main_table <- bind_rows(
   data.frame(site = c("Univariate, mortality")),
   mortality_univariate,
   data.frame(site = c("Multivariate, mortality")),
   mortality_multivariate,
-  data.frame(site = c("Univariate, landmark analysis")),
-  mortality_univariate_la,
+  data.frame(site = c("Multivariate, mortality, 2")),
+  mortality_multivariate_2,
   data.frame(site = c("Multivariate, landmark analysis")),
-  mortality_multivariate_la
+  mortality_multivariate_la,
+  data.frame(site = c("Multivariate, landmark analysis")),
+  mortality_multivariate_la,
+  data.frame(site = c("Multivariate, landmark analysis 2")),
+  mortality_multivariate_la_2
 )
 # Write the table to a CSV file
 write.csv(main_table, paste0(project_location, '/project_output_UPLOAD/', site, '_mortality_models.csv'))
@@ -2858,7 +2957,7 @@ factors_tab <- c(
 )
 
 if(n_hospitals >1){
-  tab2_continuous <- CreateTableOne(vars = to_tab, data=continuous, factorVars = factors_tab, strata="hospital_id")
+  tab2_continuous <- CreateTableOne(vars = to_tab, data=continuous %>% filter(!is.na(hospital_id)), factorVars = factors_tab, strata="hospital_id")
 }else {
   tab2_continuous <- CreateTableOne(vars = to_tab, data=continuous, factorVars = factors_tab)
 }
@@ -2896,7 +2995,7 @@ factors_tab <- c(
 )
 
 if(n_hospitals >1){
-  tab2_intermittent <- CreateTableOne(vars = to_tab, data=continuous, factorVars = factors_tab, strata="hospital_id")
+  tab2_intermittent <- CreateTableOne(vars = to_tab, data=continuous %>% filter(!is.na(hospital_id)), factorVars = factors_tab, strata="hospital_id")
 }else {
   tab2_intermittent <- CreateTableOne(vars = to_tab, data=continuous, factorVars = factors_tab)
 }
@@ -2918,7 +3017,7 @@ rm(tab2_excel)
 alt_form <- any_paralytic_48 ~  first_rose_pf_all_scale + ph_715 + prone_48 + study_period
 
 alt_mod <- glm(alt_form,
-               data = rose_analytic_df, 
+               data = rose_analytic_df %>% filter(!is.na(hospital_id)), 
                family=binomial)
 
 #Collect Coefficient and Covariance Matrix for Centralized Creation of Global Coefficient
@@ -2938,6 +3037,7 @@ df$paralytics_propensity <- predict(alt_mod, newdata=df, type = 'response')
 #Create Aggregate Dataset with Observed and Expected Events as well as N
 df_agg <- df |>
   group_by(hospital_id) |>
+  filter(!is.na(hospital_id)) |>
   summarise(
     n_patients = n(),
     observed_paralytics = sum(any_paralytic_48, na.rm=TRUE),
@@ -2945,7 +3045,6 @@ df_agg <- df |>
     paralytics_rate_adjust = mean(paralytics_propensity, na.rm = TRUE)
   ) |>
   ungroup() |>
-  filter(!is.na(hospital_id)) |>
   mutate(expected_paralytics=round((paralytics_rate_adjust*n_patients), digits = 0)) |>
   mutate(not_paralytics=n_patients-observed_paralytics)
 
@@ -2957,7 +3056,7 @@ write.csv(df_agg, paste0(project_location, '/project_output_UPLOAD/', site, '_ag
 alt_form <- any_paralytic_48 ~ first_rose_pf_all_scale + ph_715  + study_period
 
 alt_mod <- glm(alt_form,
-               data = rose_analytic_df, 
+               data = rose_analytic_df %>% filter(!is.na(hospital_id)), 
                family=binomial)
 
 #Collect Coefficient and Covariance Matrix for Centralized Creation of Global Coefficient
@@ -2971,7 +3070,7 @@ write.csv(propensity_build_covariance, paste0(project_location, '/project_output
 df <- alt_mod$data
 
 #Propensity Score Taken from Prediction
-df$paralytics_propensity <- predict(alt_mod, newdata=df, type = 'response')
+df$paralytics_propensity <- predict(alt_mod, newdata=df %>% filter(!is.na(hospital_id)), type = 'response')
 
 #Create Aggregate Dataset with Observed and Expected Events as well as N Broken Out by Proning Status
 df_agg_para_prone_status <- df |>
@@ -2995,7 +3094,7 @@ write.csv(df_agg_para_prone_status, paste0(project_location, '/project_output_UP
 alt_form <- any_paralytic_48 ~ first_rose_pf_all_scale + ph_715  
 
 alt_mod <- glm(alt_form,
-               data = rose_analytic_df, 
+               data = rose_analytic_df %>% filter(!is.na(hospital_id)), 
                family=binomial)
 
 #Collect Coefficient and Covariance Matrix for Centralized Creation of Global Coefficient
@@ -3009,11 +3108,12 @@ write.csv(propensity_build_covariance, paste0(project_location, '/project_output
 df <- alt_mod$data
 
 #Propensity Score Taken from Prediction
-df$paralytics_propensity <- predict(alt_mod, newdata=df, type = 'response')
+df$paralytics_propensity <- predict(alt_mod, newdata=df %>% filter(!is.na(hospital_id)), type = 'response')
 
 #Create Aggregate Dataset with Observed and Expected Events as well as N Broken Out by Proning Status
 df_agg_para_prone_status_sp <- df |>
   group_by(hospital_id, prone_48, study_period) |>
+  filter(!is.na(hospital_id)) |>
   summarise(
     n_patients = n(),
     observed_paralytics = sum(any_paralytic_48, na.rm=TRUE),
