@@ -715,22 +715,27 @@ vent_times <- vent_eligible |>
 clif_labs <- clif_labs |>
   mutate(hospitalization_id=as.character(hospitalization_id)) |>
   inner_join(cohort_ids) |> #NOTE: clif_labs will now include patient_id and encounter_block
-  select(-any_of(c('in_cohort', 'lab_name'))) |>
-  compute()
+  select(-any_of(c('in_cohort', 'lab_name'))) 
 
-clif_labs<- unique(clif_labs)
+gc()
 
 #PaO2 Table
 pao2 <- clif_labs |>
-  mutate(hospitalization_id=as.character(hospitalization_id)) |>
-  filter(lab_category=='po2_arterial' & !is.na(lab_value)) |>
-  filter(lab_value!='NULL') |>
-  filter(lab_value_numeric>40 & lab_value_numeric<=700) |> #Lower Bound Filtering for PaO2 Outliers > 40 and upper bound assumes FiO2 of 1.0 A-a gradient of 0 and Paco2 of 10
+    filter(
+    lab_category == "po2_arterial",
+    !is.na(lab_value_numeric),
+    lab_value_numeric > 40,
+    lab_value_numeric <= 700
+  ) |>
+   transmute(patient_id,
+    hospitalization_id,
+    encounter_block,
+    lab_collect_dttm,
+    pao2 = lab_value_numeric
+  ) |>
   distinct() |>
-  select(patient_id, encounter_block, lab_collect_dttm, lab_value_numeric) |>
   collect() |>
-  mutate(recorded_dttm=as.POSIXct(lab_collect_dttm, tz="UTC")) |> #For Merging with Vent Data
-  rename(pao2 = lab_value_numeric) 
+  mutate(recorded_dttm=as.POSIXct(lab_collect_dttm, tz="UTC")) #For Merging with Vent Data
 
 # Check fio2_set 
 fio2_mean <- clif_respiratory_support |> 
@@ -1786,24 +1791,6 @@ bmi <- clif_vitals |>
 
 temp_times <- cohort_times |>
   select(patient_id, encounter_block, t_rose_first, paralytic_time)
-
-##calculate min p/f ratio in 12h prior to t_enrollment - if no p/f use s/f in that time period - can use first_rose_pf_all instead, which accounts for pf too close to ett 
-# pf_pre_criteria <- vent_data |>
-#   filter(!is.na(pf_ratio) | !is.na(sf_ratio)) |>
-#   join(temp_times, how = 'left') |>
-#   filter(as.POSIXct(recorded_dttm, tz="UTC")>as.POSIXct(vent_episode_start, tz="UTC") &
-#            as.POSIXct(recorded_dttm)>=as.POSIXct(t_rose_first)-dhours(6) & 
-#            as.POSIXct(recorded_dttm)<=as.POSIXct(t_rose_first)) |>
-#   group_by(patient_id, encounter_block) |>
-#   summarise(
-#     lowest_pf = ifelse(all(is.na(pf_ratio)), NA_real_, min(as.numeric(pf_ratio), na.rm = TRUE)),
-#     lowest_sf = ifelse(all(is.na(sf_ratio)), NA_real_, min(as.numeric(sf_ratio), na.rm = TRUE)),
-#     .groups = "drop") |>
-#   mutate(lowest_ratio = coalesce(lowest_pf, lowest_sf)) |>
-#   mutate(lowest_either_ratio = pmin(lowest_pf, lowest_sf)) |>
-#   ungroup() |>
-#   select(patient_id, encounter_block, lowest_ratio, lowest_either_ratio, lowest_pf,lowest_sf ) 
-# pf_pre_criteria <- unique(pf_pre_criteria)
 
 ##calculate min p/f ratio in 12h prior to paralytics - if no p/f use s/f in that time period
 pf_paralytic <- vent_data |>
