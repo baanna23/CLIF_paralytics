@@ -131,8 +131,8 @@ rose_analytic_df <- rose_analytic_df |>
   filter(!is.na(days_admit_to_enroll)) |>
   mutate(counter=1,
   tv_cc_kg=set_tv_enrollment / study_weight_kg, 
-  early_prone = fifelse(as.POSIXct(first_prone_time) <= as.POSIXct(t_rose_first), 1, 0), #Final Exclusion, if proned at time of meeting criteria
-  prone_48 = (as.POSIXct(first_prone_time)<=as.POSIXct(t_rose_first)+dhours(48)), 
+  early_prone = fifelse(as.POSIXct(first_prone_time) <= as.POSIXct(t_rose_first), 1, 0), #Final potential Exclusion, if proned at time of meeting criteria
+  prone_48 = (as.POSIXct(first_prone_time)<=as.POSIXct(t_rose_first)+dhours(48)), #includes early prone before meeting criteria
   prone_48 = fifelse(prone_48==FALSE | is.na(prone_48), 0, 1), 
   prone_all = fifelse(is.na(prone_episodes), 0, 1), 
   p_and_p = fifelse(prone_48==1 & any_paralytic_48==1, 1, 0),
@@ -148,13 +148,11 @@ rose_analytic_df <- rose_analytic_df |>
   agitated_rass = fifelse(max_rass12 >1, 1,0), #ever rass >1
   hypoxemia = fifelse(pfround <100, 1, 0), 
   code_status_presume = fifelse(!is.na(code_status_category), code_status_category, "Full"), 
-risk_factors_meet_criteria=case_when(ph_715==1 & hypoxemia==1  ~"Hypoxemia, Low pH", ph_715==0 & hypoxemia==1 ~"Hypoxemia", ph_715==1 &   hypoxemia==0  ~"Low pH",  ph_715==0 &  hypoxemia==0~"None"), 
+risk_factors_meet_criteria_no_prone=case_when(ph_715==1 & hypoxemia==1  ~"Hypoxemia, Low pH", ph_715==0 & hypoxemia==1 ~"Hypoxemia", ph_715==1 &   hypoxemia==0  ~"Low pH",  ph_715==0 &  hypoxemia==0~"None"), 
+risk_factors_meet_criteria=case_when(ph_715==1 & hypoxemia==1 & early_prone==1 ~"Hypoxemia, Low pH, proned", ph_715==0 & hypoxemia==1 & early_prone==1~"Hypoxemia, proned", ph_715==1 &   hypoxemia==0 & early_prone==1 ~"Low pH, proned",  ph_715==0 &  hypoxemia==0& early_prone==1~"Proned", ph_715==1 & hypoxemia==1 & early_prone==0 ~"Hypoxemia, Low pH", ph_715==0 & hypoxemia==1 & early_prone==0~"Hypoxemia", ph_715==1 &   hypoxemia==0 & early_prone==0 ~"Low pH",  ph_715==0 &  hypoxemia==0& early_prone==0~"None"), 
   risk_factors_meet_criteria2=case_when(ph_715==1 & hypoxemia==1 & dys_rr==1 ~"Hypoxemia, Low pH, Inc RR", ph_715==0 & hypoxemia==1 & dys_rr==1~"Hypoxemia, Inc RR", ph_715==1 &   hypoxemia==0 & dys_rr==1 ~"Low pH, Inc RR",  ph_715==0 &  hypoxemia==0 & dys_rr==1~"Inc RR", ph_715==1 & hypoxemia==1 & dys_rr==0 ~"Hypoxemia, Low pH", ph_715==0 & hypoxemia==1 & dys_rr==0 ~"Hypoxemia", ph_715==1 &   hypoxemia==0 & dys_rr==0 ~"Low pH",  ph_715==0 &  hypoxemia==0 & dys_rr==0~"None")   
   ) |>
   collect()
-
-earlyprone<- as.data.frame(table(rose_analytic_df$early_prone, rose_analytic_df$any_paralytic_48))
-write.csv(earlyprone, file=paste0(project_location, '/project_output_UPLOAD/', site, '_early_proning_numbers.csv'))
 
 rose_analytic_df <- rose_analytic_df |>
   mutate(covid_positive =case_when(sars_cov2_positive == '1'~1, is.na(sars_cov2_positive) | sars_cov2_positive=='0' ~0),
@@ -167,6 +165,13 @@ rose_analytic_df <- rose_analytic_df |>
       joint_prone_para6 = replace_na(fifelse(as.POSIXct(first_prone_time) <= as.POSIXct(paralytic_time) + hours(6), 1, 0), 0),
       para_to_prone = difftime(first_prone_time, paralytic_time, units = "hours"), 
       criteria_to_prone = difftime(first_prone_time, t_rose_first, units = "hours"))
+
+earlyprone<- as.data.frame(table(rose_analytic_df$early_prone, rose_analytic_df$any_paralytic_48))
+earlyprone$label = c("no paralytic or early prone", "early prone, no paralytic", "paralytic not early prone", "early prone on paralytic")
+write.csv(earlyprone, file=paste0(project_location, '/project_output_UPLOAD/', site, '_early_proning_numbers.csv'))
+
+earlyprone<- as.data.frame(table(rose_analytic_df$early_prone, rose_analytic_df$joint_prone_para6))
+write.csv(earlyprone, file=paste0(project_location, '/project_output_UPLOAD/', site, '_joint_proning_numbers.csv'))
 
 #variables at the time of paralytic initiation - it's initial paralytic time, if not started on paralytics will remove later. 
 rose_analytic_df <- rose_analytic_df |> 
@@ -183,6 +188,7 @@ rose_analytic_df <- rose_analytic_df |>
   agitated_rass_paralytic = fifelse(max_rass12_paralytic >1, 1,0), 
   hypoxemia_paralytic = fifelse(pfround_paralytic <100, 1, 0), 
   risk_factors_paralytic=case_when(joint_prone_para6==1 & hypoxemia_paralytic==1 & ph_715_paralytic==0 ~"Hypoxemia, Prone", joint_prone_para6==0 & hypoxemia_paralytic==1  & ph_715_paralytic==0~"Hypoxemia", joint_prone_para6==1 &   hypoxemia_paralytic==0 & ph_715_paralytic==0~"Prone",  joint_prone_para6==0 &  hypoxemia_paralytic==0 &  ph_715_paralytic==0~"None", joint_prone_para6==1 & hypoxemia_paralytic==1 & ph_715_paralytic==1 ~"Hypoxemia, Prone, Low pH", joint_prone_para6==0 & hypoxemia_paralytic==1 & ph_715_paralytic==1~"Hypoxemia, Low pH", joint_prone_para6==1 &   hypoxemia_paralytic==0 &   ph_715_paralytic==1~"Prone, Low pH",  joint_prone_para6==0 &  hypoxemia_paralytic==0  & ph_715_paralytic==1~"Low pH"),
+  
   risk_factors_paralytic2=case_when(joint_prone_para6==1 & hypoxemia_paralytic==1 & ph_715_paralytic==0 & dys_rr_paralytic==1 ~"Hypoxemia, Prone, Inc RR", joint_prone_para6==0 & hypoxemia_paralytic==1  & ph_715_paralytic==0 & dys_rr_paralytic==1 ~"Hypoxemia, Inc RR", joint_prone_para6==1 &   hypoxemia_paralytic==0 & ph_715_paralytic==0 & dys_rr_paralytic==1 ~"Prone, Inc RR",  joint_prone_para6==0 &  hypoxemia_paralytic==0 &  ph_715_paralytic==0 & dys_rr_paralytic==1 ~"Inc RR", joint_prone_para6==1 & hypoxemia_paralytic==1 & ph_715_paralytic==1  & dys_rr_paralytic==1 ~"Hypoxemia, Prone, Low pH, Inc RR", joint_prone_para6==0 & hypoxemia_paralytic==1 & ph_715_paralytic==1  & dys_rr_paralytic==1 ~"Hypoxemia, Low pH, Inc RR", joint_prone_para6==1 &   hypoxemia_paralytic==0 &   ph_715_paralytic==1 & dys_rr_paralytic==1 ~"Prone, Low pH, Inc RR",  joint_prone_para6==0 &  hypoxemia_paralytic==0  & ph_715_paralytic==1 & dys_rr_paralytic==1 ~"Low pH, Inc RR", joint_prone_para6==1 & hypoxemia_paralytic==1 & ph_715_paralytic==0  & dys_rr_paralytic==0 ~"Hypoxemia, Prone", joint_prone_para6==0 & hypoxemia_paralytic==1  & ph_715_paralytic==0  & dys_rr_paralytic==0 ~"Hypoxemia", joint_prone_para6==1 &   hypoxemia_paralytic==0 & ph_715_paralytic==0  & dys_rr_paralytic==0 ~"Prone",  joint_prone_para6==0 &  hypoxemia_paralytic==0 &  ph_715_paralytic==0  & dys_rr_paralytic==0 ~"None", joint_prone_para6==1 & hypoxemia_paralytic==1 & ph_715_paralytic==1  & dys_rr_paralytic==0  ~"Hypoxemia, Prone, Low pH", joint_prone_para6==0 & hypoxemia_paralytic==1 & ph_715_paralytic==1  & dys_rr_paralytic==0 ~"Hypoxemia, Low pH", joint_prone_para6==1 &   hypoxemia_paralytic==0 &   ph_715_paralytic==1  & dys_rr_paralytic==0 ~"Prone, Low pH",  joint_prone_para6==0 &  hypoxemia_paralytic==0  & ph_715_paralytic==1  & dys_rr_paralytic==0 ~"Low pH")
   )   |>
   collect()
@@ -210,22 +216,22 @@ rose <- rose |>
 rose$period <- ifelse(rose$year %in% 2018:2021, "2018-2021", "2022-2025")
 write.csv(rose, file=paste0(project_location, '/project_output_UPLOAD/', site, '_ahrf_cohort_table.csv'))
 
-inclusions <- rose_analytic_df |>
-  filter(is.na(early_prone) | early_prone==0)
-
-next_exclusion <- data.frame(
-  excluded_encounters = nrow(rose_analytic_df) - nrow(inclusions),
-    involved_patients = length(unique(rose_analytic_df$patient_id)) - length(unique(inclusions$patient_id)),
-  reason = "early prone"
-)
+# inclusions <- rose_analytic_df |>
+#   filter(is.na(early_prone) | early_prone==0)
+# 
+# next_exclusion <- data.frame(
+#   excluded_encounters = nrow(rose_analytic_df) - nrow(inclusions),
+#     involved_patients = length(unique(rose_analytic_df$patient_id)) - length(unique(inclusions$patient_id)),
+#   reason = "early prone"
+# )
 
 consort <- read.csv(paste0(project_location, '/project_output_UPLOAD/', site,'_consort.csv'))
 consort <- consort[1:9, ]
-consort <- bind_rows(consort, next_exclusion)
+#consort <- bind_rows(consort, next_exclusion)
 
 #For patient_ids with more than one encounter block, select one at random
-rose_analytic_df <- rose_analytic_df |>
-  filter(is.na(early_prone) | early_prone==0) #remove those early proned before meeting criteria - > different etiology likely. 
+#rose_analytic_df <- rose_analytic_df |>
+#  filter(is.na(early_prone) | early_prone==0) #remove those early proned before meeting criteria - > different etiology likely. 
 
 inclusions <- rose_analytic_df |>
   filter(year(t_rose_first)<2026)
@@ -717,6 +723,8 @@ to_tab <- c(
   'code_status_presume',
   'prone_48',
   'p_and_p',
+  'prone_all',
+  'early_prone',
   'ph_72',
   'dys_rr',
   'dys_mv',
@@ -737,7 +745,8 @@ to_tab <- c(
   'agitated_rass_paralytic', 
   'hypoxemia_paralytic', 
   'risk_factors_paralytic',
-    'risk_factors_paralytic2',
+  'risk_factors_paralytic2',
+
   'joint_prone_para6'
 )
 
@@ -763,6 +772,8 @@ factors_tab <- c(
   'code_status_presume',
   'prone_48',
   'p_and_p',
+  'prone_all',
+  'early_prone',
   'dys_rr',
   'dys_mv',
   'ph_715', 
@@ -794,7 +805,7 @@ tab1_excel <- as.data.frame(print(tab1, printToggle = FALSE, missing = TRUE)) |>
   # Replace cells where the count (number before parenthesis) is < 10
   mutate(across(-c(characteristic, site, percent_missing, p), ~ {
     counts <- as.numeric(gsub("^\\s*([0-9]+)\\s*\\(.*", "\\1", .x))
-    fifelse(!is.na(counts) & counts < 10 & counts > 0  & characteristic !="prone_48...1...." & characteristic !="p_and_p...1...." & characteristic !="dys_rr...1...." & characteristic != "dys_mv...1...." & characteristic != "ph_715...1....", "<10"
+    fifelse(!is.na(counts) & counts < 10 & counts > 0  & characteristic !="prone_48...1...." & characteristic !="early_prone...1...." & characteristic !="p_and_p...1...." & characteristic !="dys_rr...1...." & characteristic != "dys_mv...1...." & characteristic != "ph_715...1....", "<10"
             , .x)
     }))
 write.csv(tab1_excel, file=paste0(project_location, '/project_output_UPLOAD/', site, '_Table1_by_Paralytics.csv'))
@@ -813,7 +824,7 @@ tab1_excel <- as.data.frame(print(tab1, printToggle = FALSE, missing = TRUE)) |>
   # Replace cells where the count (number before parenthesis) is < 10
   mutate(across(-c(characteristic, site, percent_missing, p), ~ {
     counts <- as.numeric(gsub("^\\s*([0-9]+)\\s*\\(.*", "\\1", .x))
-    fifelse(!is.na(counts) & counts < 10 & counts > 0  & characteristic !="prone_48...1...." & characteristic !="p_and_p...1...." & characteristic !="dys_rr...1...." & characteristic != "dys_mv...1...." & characteristic != "ph_715...1....", "<10"
+    fifelse(!is.na(counts) & counts < 10 & counts > 0  & characteristic !="prone_48...1...." & characteristic !="early_prone...1...."& characteristic !="p_and_p...1...." & characteristic !="dys_rr...1...." & characteristic != "dys_mv...1...." & characteristic != "ph_715...1....", "<10"
             , .x)
     }))
 write.csv(tab1_excel, file=paste0(project_location, '/project_output_UPLOAD/', site, '_Table1_by_hospital_id.csv'))
@@ -847,7 +858,7 @@ tab1_excel <- as.data.frame(print(tab1, printToggle = FALSE, missing = TRUE)) |>
   # Replace cells where the count (number before parenthesis) is < 5
   mutate(across(-c(characteristic, site, percent_missing, p), ~ {
     counts <- as.numeric(gsub("^\\s*([0-9]+)\\s*\\(.*", "\\1", .x))
-    fifelse(!is.na(counts) & counts < 10 & counts > 0 & characteristic !="prone_48...1...." & characteristic !="p_and_p...1...." & characteristic !="dys_rr...1...." & characteristic != "dys_mv...1...." & characteristic != "ph_715...1....", "<10", .x)
+    fifelse(!is.na(counts) & counts < 10 & counts > 0 & characteristic !="prone_48...1...." & characteristic !="early_prone...1...."& characteristic !="p_and_p...1...." & characteristic !="dys_rr...1...." & characteristic != "dys_mv...1...." & characteristic != "ph_715...1....", "<10", .x)
     }))
 write.csv(tab1_excel, file=paste0(project_location, '/project_output_UPLOAD/', site, '_Table1_by_Paralytics_by_Hospital.csv'))
 rm(tab1_excel)
@@ -863,7 +874,7 @@ tab1_excel <- as.data.frame(print(tab1, printToggle = FALSE, missing = TRUE)) |>
   # Replace cells where the count (number before parenthesis) is < 5
   mutate(across(-c(characteristic, site, percent_missing, p), ~ {
     counts <- as.numeric(gsub("^\\s*([0-9]+)\\s*\\(.*", "\\1", .x))
-    fifelse(!is.na(counts) & counts < 10 & counts > 0 , "<10", .x)
+    fifelse(!is.na(counts) & counts < 10 & counts > 0& characteristic !="prone_48...1...." & characteristic !="early_prone...1...." & characteristic !="p_and_p...1...." & characteristic !="dys_rr...1...." & characteristic != "dys_mv...1...." & characteristic != "ph_715...1...." , "<10", .x)
     }))
 write.csv(tab1_excel, file=paste0(project_location, '/project_output_UPLOAD/', site, '_Table1_by_Period.csv'))
 rm(tab1_excel)
@@ -879,7 +890,7 @@ tab1_excel <- as.data.frame(print(tab1, printToggle = FALSE, missing = TRUE)) |>
   # Replace cells where the count (number before parenthesis) is < 5
   mutate(across(-c(characteristic, site, percent_missing, p), ~ {
     counts <- as.numeric(gsub("^\\s*([0-9]+)\\s*\\(.*", "\\1", .x))
-    fifelse(!is.na(counts) & counts < 10 & counts > 0 & characteristic !="prone_48...1...." & characteristic !="p_and_p...1...." & characteristic !="dys_rr...1...." & characteristic != "dys_mv...1...." & characteristic != "ph_715...1....", "<10", .x)
+    fifelse(!is.na(counts) & counts < 10 & counts > 0 & characteristic !="prone_48...1...." & characteristic !="early_prone...1...." & characteristic !="p_and_p...1...." & characteristic !="dys_rr...1...." & characteristic != "dys_mv...1...." & characteristic != "ph_715...1....", "<10", .x)
     }))
 write.csv(tab1_excel, file=paste0(project_location, '/project_output_UPLOAD/', site, '_Table1_by_icu_type.csv'))
 rm(tab1_excel)
@@ -895,7 +906,7 @@ tab1_excel <- as.data.frame(print(tab1, printToggle = FALSE, missing = TRUE)) |>
   # Replace cells where the count (number before parenthesis) is < 5
   mutate(across(-c(characteristic, site, percent_missing, p), ~ {
     counts <- as.numeric(gsub("^\\s*([0-9]+)\\s*\\(.*", "\\1", .x))
-    fifelse(!is.na(counts) & counts < 10 & counts > 0 & characteristic !="prone_48...1...." & characteristic !="p_and_p...1...." & characteristic !="severe_ards...1...." & characteristic !="dys_rr...1...." & characteristic != "dys_mv...1...." & characteristic != "ph_715...1....", "<10", .x)
+    fifelse(!is.na(counts) & counts < 10 & counts > 0 & characteristic !="prone_48...1...." & characteristic !="early_prone...1...." & characteristic !="p_and_p...1...." & characteristic !="severe_ards...1...." & characteristic !="dys_rr...1...." & characteristic != "dys_mv...1...." & characteristic != "ph_715...1....", "<10", .x)
     }))
 write.csv(tab1_excel, file=paste0(project_location, '/project_output_UPLOAD/', site, '_Table1_by_proning.csv'))
 rm(tab1_excel)
@@ -911,7 +922,7 @@ tab1_excel <- as.data.frame(print(tab1, printToggle = FALSE, missing = TRUE)) |>
   # Replace cells where the count (number before parenthesis) is < 5
   mutate(across(-c(characteristic, site, percent_missing, p), ~ {
     counts <- as.numeric(gsub("^\\s*([0-9]+)\\s*\\(.*", "\\1", .x))
-    fifelse(!is.na(counts) & counts < 10 & counts > 0 & characteristic !="prone_48...1...." & characteristic !="p_and_p...1...." & characteristic !="severe_ards...1...." & characteristic !="dys_rr...1...." & characteristic != "dys_mv...1...." & characteristic != "ph_715...1....", "<10", .x)
+    fifelse(!is.na(counts) & counts < 10 & counts > 0 & characteristic !="prone_48...1...." & characteristic !="early_prone...1...." & characteristic !="p_and_p...1...." & characteristic !="severe_ards...1...." & characteristic !="dys_rr...1...." & characteristic != "dys_mv...1...." & characteristic != "ph_715...1....", "<10", .x)
     }))
 write.csv(tab1_excel, file=paste0(project_location, '/project_output_UPLOAD/', site, '_Table1_by_proning_paralytic.csv'))
 rm(tab1_excel)
@@ -927,7 +938,7 @@ tab1_excel <- as.data.frame(print(tab1, printToggle = FALSE, missing = TRUE)) |>
   # Replace cells where the count (number before parenthesis) is < 5
   mutate(across(-c(characteristic, site, percent_missing, p), ~ {
     counts <- as.numeric(gsub("^\\s*([0-9]+)\\s*\\(.*", "\\1", .x))
-    fifelse(!is.na(counts) & counts < 10 & counts > 0 & characteristic !="prone_48...1...." & characteristic !="p_and_p...1...." & characteristic !="severe_ards...1...." & characteristic !="dys_rr...1...." & characteristic != "dys_mv...1...." & characteristic != "ph_715...1....", "<10", .x)
+    fifelse(!is.na(counts) & counts < 10 & counts > 0 & characteristic !="prone_48...1...."& characteristic !="early_prone...1...."  & characteristic !="p_and_p...1...." & characteristic !="severe_ards...1...." & characteristic !="dys_rr...1...." & characteristic != "dys_mv...1...." & characteristic != "ph_715...1....", "<10", .x)
     }))
 write.csv(tab1_excel, file=paste0(project_location, '/project_output_UPLOAD/', site, '_Table1_by_paralytic_unproned.csv'))
 rm(tab1_excel)
@@ -998,6 +1009,7 @@ to_tab <- c(
   'first_rose_pf_all',
   'pfround_paralytic',
   'prone_48',
+  'early_prone',
   'min_ph',
  # 'total_continuous_para_hours_prior',
   'total_continuous_para_hours_post',
@@ -1024,6 +1036,7 @@ factors_tab <- c(
   'in_hosp_death',
   'death_or_hospice',
   'prone_48',
+  'early_prone',
     'continous_paralytic_given'
 )
 
@@ -1184,11 +1197,12 @@ write.csv(tab2_gt, file=paste0(project_location, '/project_output_UPLOAD/', site
 tab2_gt <- as_tibble(tab2_gt)
 
 write.csv(tab2_gt, file=paste0(project_location, '/project_output_UPLOAD/', site, '_Table_paralytics_Outcomes_by_paralytics_hospital_median.csv'))
+}
 
 
 #median - among proned patients
   tab2_gt <- rose_analytic_df |>
-          filter(prone_all==1) |>
+          filter(prone_48==1) |>
   select(all_of(to_tab), hospital_id, any_paralytic_48) |>
       filter(!is.na(hospital_id)) |>
   tbl_strata(
@@ -1202,7 +1216,7 @@ write.csv(tab2_gt, file=paste0(project_location, '/project_output_UPLOAD/', site
 tab2_gt <- as_tibble(tab2_gt)
 
 write.csv(tab2_gt, file=paste0(project_location, '/project_output_UPLOAD/', site, '_Table_paralytics_Outcomes_by_paralytics_hospital_median_proned.csv'))
-} 
+
 ```
 
 
@@ -1692,6 +1706,11 @@ safe_glm <- safely(function(df, predictor_var) {
   glm(model_form, data = df, family = binomial, na.action = na.omit)
 })
 
+safe_tidy <- possibly(
+  ~ tidy(.x, exponentiate = TRUE, conf.int = TRUE),
+  otherwise = NULL
+)
+
 #proning
 models_by_hospital_prone <- rose_analytic_df |>
   group_by(hospital_id) |>
@@ -1702,13 +1721,22 @@ models_by_hospital_prone <- rose_analytic_df |>
     error = map(fit, "error"),
         n = map_int(model, ~ if (is.null(.x)) NA_integer_ else nobs(.x)),
     results = map(model, ~ {
-      if (is.null(.x)) {
-        tibble()
-      } else {
-        tidy(.x, exponentiate = TRUE, conf.int = TRUE)
-      }})) |>
+  if (is.null(.x)) {
+    tibble()
+  } else {
+    result <- safe_tidy(.x)
+    if (is.null(result)) {
+      tidy(.x, exponentiate = TRUE, conf.int = FALSE) %>%
+        mutate(conf.low = NA_real_, conf.high = NA_real_)
+    } else {
+      result
+    }
+  }
+})
+    ) |>
   select(hospital_id, n, results) |>
   unnest(results)
+
 
 models_by_icu_prone <- rose_analytic_df %>%
   group_by(enrollment_location_type) %>%
@@ -1717,12 +1745,20 @@ models_by_icu_prone <- rose_analytic_df %>%
     model = map(fit, "result"),
     error = map(fit, "error"),
         n = map_int(model, ~ if (is.null(.x)) NA_integer_ else nobs(.x)),
-    results = map(model, ~ {
-      if (is.null(.x)) {
-        tibble()
-      } else {
-        tidy(.x, exponentiate = TRUE, conf.int = TRUE)
-      }})) %>%
+results = map(model, ~ {
+  if (is.null(.x)) {
+    tibble()
+  } else {
+    result <- safe_tidy(.x)
+    if (is.null(result)) {
+      tidy(.x, exponentiate = TRUE, conf.int = FALSE) %>%
+        mutate(conf.low = NA_real_, conf.high = NA_real_)
+    } else {
+      result
+    }
+  }
+})
+    ) %>%
   select(enrollment_location_type,n,  results) %>%
   unnest(results)
 
@@ -1735,11 +1771,19 @@ models_by_hospital_icu_prone <- rose_analytic_df %>%
     error = map(fit, "error"),
         n = map_int(model, ~ if (is.null(.x)) NA_integer_ else nobs(.x)),
     results = map(model, ~ {
-      if (is.null(.x)) {
-        tibble()
-      } else {
-        tidy(.x, exponentiate = TRUE, conf.int = TRUE)
-      }})) %>%
+  if (is.null(.x)) {
+    tibble()
+  } else {
+    result <- safe_tidy(.x)
+    if (is.null(result)) {
+      tidy(.x, exponentiate = TRUE, conf.int = FALSE) %>%
+        mutate(conf.low = NA_real_, conf.high = NA_real_)
+    } else {
+      result
+    }
+  }
+})
+    ) %>%
   select(hospital_id,enrollment_location_type,n,  results) %>%
   unnest(results)
 
@@ -1752,12 +1796,19 @@ models_by_hospital_period <- rose_analytic_df %>%
     model = map(fit, "result"),
     error = map(fit, "error"),
         n = map_int(model, ~ if (is.null(.x)) NA_integer_ else nobs(.x)),
-    results = map(model, ~ {
-      if (is.null(.x)) {
-        tibble()
-      } else {
-        tidy(.x, exponentiate = TRUE, conf.int = TRUE)
-      }})) %>%
+  results = map(model, ~ {
+  if (is.null(.x)) {
+    tibble()
+  } else {
+    result <- safe_tidy(.x)
+    if (is.null(result)) {
+      tidy(.x, exponentiate = TRUE, conf.int = FALSE) %>%
+        mutate(conf.low = NA_real_, conf.high = NA_real_)
+    } else {
+      result
+    }
+  }
+})) %>%
   select(hospital_id, n, results) %>%
   unnest(results)
 
@@ -1768,12 +1819,19 @@ models_by_icu_period <- rose_analytic_df %>%
     model = map(fit, "result"),
     error = map(fit, "error"),
         n = map_int(model, ~ if (is.null(.x)) NA_integer_ else nobs(.x)),
-    results = map(model, ~ {
-      if (is.null(.x)) {
-        tibble()
-      } else {
-        tidy(.x, exponentiate = TRUE, conf.int = TRUE)
-      }})) %>%
+results = map(model, ~ {
+  if (is.null(.x)) {
+    tibble()
+  } else {
+    result <- safe_tidy(.x)
+    if (is.null(result)) {
+      tidy(.x, exponentiate = TRUE, conf.int = FALSE) %>%
+        mutate(conf.low = NA_real_, conf.high = NA_real_)
+    } else {
+      result
+    }
+  }
+})) %>%
   select(enrollment_location_type,n,  results) %>%
   unnest(results)
 
@@ -1785,12 +1843,19 @@ models_by_hospital_icu_period <- rose_analytic_df %>%
     model = map(fit, "result"),
     error = map(fit, "error"),
         n = map_int(model, ~ if (is.null(.x)) NA_integer_ else nobs(.x)),
-    results = map(model, ~ {
-      if (is.null(.x)) {
-        tibble()
-      } else {
-        tidy(.x, exponentiate = TRUE, conf.int = TRUE)
-      }})) %>%
+results = map(model, ~ {
+  if (is.null(.x)) {
+    tibble()
+  } else {
+    result <- safe_tidy(.x)
+    if (is.null(result)) {
+      tidy(.x, exponentiate = TRUE, conf.int = FALSE) %>%
+        mutate(conf.low = NA_real_, conf.high = NA_real_)
+    } else {
+      result
+    }
+  }
+})) %>%
   select(hospital_id,enrollment_location_type, n, results) %>%
   unnest(results)
 
@@ -1803,12 +1868,19 @@ models_by_hospital_period_prone <- rose_analytic_df %>%
     model = map(fit, "result"),
     error = map(fit, "error"),
         n = map_int(model, ~ if (is.null(.x)) NA_integer_ else nobs(.x)),
-    results = map(model, ~ {
-      if (is.null(.x)) {
-        tibble()
-      } else {
-        tidy(.x, exponentiate = TRUE, conf.int = TRUE)
-      }})) %>%
+results = map(model, ~ {
+  if (is.null(.x)) {
+    tibble()
+  } else {
+    result <- safe_tidy(.x)
+    if (is.null(result)) {
+      tidy(.x, exponentiate = TRUE, conf.int = FALSE) %>%
+        mutate(conf.low = NA_real_, conf.high = NA_real_)
+    } else {
+      result
+    }
+  }
+})) %>%
   select(hospital_id,n,  results) %>%
   unnest(results)
 
@@ -1819,12 +1891,19 @@ models_by_icu_period_prone <- rose_analytic_df %>%
     model = map(fit, "result"),
     error = map(fit, "error"),
         n = map_int(model, ~ if (is.null(.x)) NA_integer_ else nobs(.x)),
-    results = map(model, ~ {
-      if (is.null(.x)) {
-        tibble()
-      } else {
-        tidy(.x, exponentiate = TRUE, conf.int = TRUE)
-      }})) %>%
+results = map(model, ~ {
+  if (is.null(.x)) {
+    tibble()
+  } else {
+    result <- safe_tidy(.x)
+    if (is.null(result)) {
+      tidy(.x, exponentiate = TRUE, conf.int = FALSE) %>%
+        mutate(conf.low = NA_real_, conf.high = NA_real_)
+    } else {
+      result
+    }
+  }
+})) %>%
   select(enrollment_location_type,n,  results) %>%
   unnest(results)
 
@@ -1836,12 +1915,19 @@ models_by_hospital_icu_period_prone <- rose_analytic_df %>%
     model = map(fit, "result"),
     error = map(fit, "error"),
         n = map_int(model, ~ if (is.null(.x)) NA_integer_ else nobs(.x)),
-    results = map(model, ~ {
-      if (is.null(.x)) {
-        tibble()
-      } else {
-        tidy(.x, exponentiate = TRUE, conf.int = TRUE)
-      }})) %>%
+  results = map(model, ~ {
+  if (is.null(.x)) {
+    tibble()
+  } else {
+    result <- safe_tidy(.x)
+    if (is.null(result)) {
+      tidy(.x, exponentiate = TRUE, conf.int = FALSE) %>%
+        mutate(conf.low = NA_real_, conf.high = NA_real_)
+    } else {
+      result
+    }
+  }
+})) %>%
   select(hospital_id,enrollment_location_type,n,  results) %>%
   unnest(results)
 
@@ -1854,12 +1940,19 @@ models_by_hospital_hypoxia <- rose_analytic_df %>%
     model = map(fit, "result"),
     error = map(fit, "error"),
         n = map_int(model, ~ if (is.null(.x)) NA_integer_ else nobs(.x)),
-    results = map(model, ~ {
-      if (is.null(.x)) {
-        tibble()
-      } else {
-        tidy(.x, exponentiate = TRUE, conf.int = TRUE)
-      }})) %>%
+  results = map(model, ~ {
+  if (is.null(.x)) {
+    tibble()
+  } else {
+    result <- safe_tidy(.x)
+    if (is.null(result)) {
+      tidy(.x, exponentiate = TRUE, conf.int = FALSE) %>%
+        mutate(conf.low = NA_real_, conf.high = NA_real_)
+    } else {
+      result
+    }
+  }
+})) %>%
   select(hospital_id, n, results) %>%
   unnest(results)
 
@@ -1871,11 +1964,18 @@ models_by_icu_hypoxia <- rose_analytic_df %>%
     error = map(fit, "error"),
         n = map_int(model, ~ if (is.null(.x)) NA_integer_ else nobs(.x)),
     results = map(model, ~ {
-      if (is.null(.x)) {
-        tibble()
-      } else {
-        tidy(.x, exponentiate = TRUE, conf.int = TRUE)
-      }})) %>%
+  if (is.null(.x)) {
+    tibble()
+  } else {
+    result <- safe_tidy(.x)
+    if (is.null(result)) {
+      tidy(.x, exponentiate = TRUE, conf.int = FALSE) %>%
+        mutate(conf.low = NA_real_, conf.high = NA_real_)
+    } else {
+      result
+    }
+  }
+})) %>%
   select(enrollment_location_type, n, results) %>%
   unnest(results)
 
@@ -1888,11 +1988,18 @@ models_by_hospital_icu_hypoxia <- rose_analytic_df %>%
     error = map(fit, "error"),
         n = map_int(model, ~ if (is.null(.x)) NA_integer_ else nobs(.x)),
     results = map(model, ~ {
-      if (is.null(.x)) {
-        tibble()
-      } else {
-        tidy(.x, exponentiate = TRUE, conf.int = TRUE)
-      }})) %>%
+  if (is.null(.x)) {
+    tibble()
+  } else {
+    result <- safe_tidy(.x)
+    if (is.null(result)) {
+      tidy(.x, exponentiate = TRUE, conf.int = FALSE) %>%
+        mutate(conf.low = NA_real_, conf.high = NA_real_)
+    } else {
+      result
+    }
+  }
+})) %>%
   select(hospital_id,enrollment_location_type,n,  results) %>%
   unnest(results)
 
@@ -1905,12 +2012,19 @@ models_by_hospital_hypoxia_unproned <- unproned_cohort %>%
     model = map(fit, "result"),
     error = map(fit, "error"),
         n = map_int(model, ~ if (is.null(.x)) NA_integer_ else nobs(.x)),
-    results = map(model, ~ {
-      if (is.null(.x)) {
-        tibble()
-      } else {
-        tidy(.x, exponentiate = TRUE, conf.int = TRUE)
-      }})) %>%
+   results = map(model, ~ {
+  if (is.null(.x)) {
+    tibble()
+  } else {
+    result <- safe_tidy(.x)
+    if (is.null(result)) {
+      tidy(.x, exponentiate = TRUE, conf.int = FALSE) %>%
+        mutate(conf.low = NA_real_, conf.high = NA_real_)
+    } else {
+      result
+    }
+  }
+})) %>%
   select(hospital_id, n, results) %>%
   unnest(results)
 
@@ -1922,11 +2036,18 @@ models_by_icu_hypoxia_unproned <- unproned_cohort %>%
     error = map(fit, "error"),
         n = map_int(model, ~ if (is.null(.x)) NA_integer_ else nobs(.x)),
     results = map(model, ~ {
-      if (is.null(.x)) {
-        tibble()
-      } else {
-        tidy(.x, exponentiate = TRUE, conf.int = TRUE)
-      }})) %>%
+  if (is.null(.x)) {
+    tibble()
+  } else {
+    result <- safe_tidy(.x)
+    if (is.null(result)) {
+      tidy(.x, exponentiate = TRUE, conf.int = FALSE) %>%
+        mutate(conf.low = NA_real_, conf.high = NA_real_)
+    } else {
+      result
+    }
+  }
+})) %>%
   select(enrollment_location_type,n,  results) %>%
   unnest(results)
 
@@ -1939,11 +2060,18 @@ models_by_hospital_icu_hypoxia_unproned <- unproned_cohort %>%
     error = map(fit, "error"),
         n = map_int(model, ~ if (is.null(.x)) NA_integer_ else nobs(.x)),
     results = map(model, ~ {
-      if (is.null(.x)) {
-        tibble()
-      } else {
-        tidy(.x, exponentiate = TRUE, conf.int = TRUE)
-      }})) %>%
+  if (is.null(.x)) {
+    tibble()
+  } else {
+    result <- safe_tidy(.x)
+    if (is.null(result)) {
+      tidy(.x, exponentiate = TRUE, conf.int = FALSE) %>%
+        mutate(conf.low = NA_real_, conf.high = NA_real_)
+    } else {
+      result
+    }
+  }
+})) %>%
   select(hospital_id,enrollment_location_type,n,  results) %>%
   unnest(results)
 
@@ -1957,11 +2085,18 @@ models_by_hospital_hypoxia_proned <- proned_cohort %>%
     error = map(fit, "error"),
         n = map_int(model, ~ if (is.null(.x)) NA_integer_ else nobs(.x)),
     results = map(model, ~ {
-      if (is.null(.x)) {
-        tibble()
-      } else {
-        tidy(.x, exponentiate = TRUE, conf.int = TRUE)
-      }})) %>%
+  if (is.null(.x)) {
+    tibble()
+  } else {
+    result <- safe_tidy(.x)
+    if (is.null(result)) {
+      tidy(.x, exponentiate = TRUE, conf.int = FALSE) %>%
+        mutate(conf.low = NA_real_, conf.high = NA_real_)
+    } else {
+      result
+    }
+  }
+})) %>%
   select(hospital_id, n, results) %>%
   unnest(results)
 
@@ -1973,11 +2108,18 @@ models_by_icu_hypoxia_proned <- proned_cohort %>%
     error = map(fit, "error"),
      n = map_int(model, ~ if (is.null(.x)) NA_integer_ else nobs(.x)),
     results = map(model, ~ {
-      if (is.null(.x)) {
-        tibble()
-      } else {
-        tidy(.x, exponentiate = TRUE, conf.int = TRUE)
-      }})) %>%
+  if (is.null(.x)) {
+    tibble()
+  } else {
+    result <- safe_tidy(.x)
+    if (is.null(result)) {
+      tidy(.x, exponentiate = TRUE, conf.int = FALSE) %>%
+        mutate(conf.low = NA_real_, conf.high = NA_real_)
+    } else {
+      result
+    }
+  }
+})) %>%
   select(enrollment_location_type, n, results) %>%
   unnest(results)
 
@@ -1990,13 +2132,19 @@ models_by_hospital_icu_hypoxia_proned <- proned_cohort %>%
     model = map(fit, "result"),
     error = map(fit, "error"),
     n = map_int(model, ~ if (is.null(.x)) NA_integer_ else nobs(.x)),
-    results = map(model, ~ {
-      if (is.null(.x)) {
-        tibble()
-      } else {
-        tidy(.x, exponentiate = TRUE, conf.int = TRUE)
-      }
-    })
+results = map(model, ~ {
+  if (is.null(.x)) {
+    tibble()
+  } else {
+    result <- safe_tidy(.x)
+    if (is.null(result)) {
+      tidy(.x, exponentiate = TRUE, conf.int = FALSE) %>%
+        mutate(conf.low = NA_real_, conf.high = NA_real_)
+    } else {
+      result
+    }
+  }
+})
   ) %>%
   select(hospital_id, enrollment_location_type, n, results) %>%
   unnest(results)
@@ -2011,11 +2159,18 @@ models_by_hospital_ph <- rose_analytic_df %>%
     error = map(fit, "error"),
         n = map_int(model, ~ if (is.null(.x)) NA_integer_ else nobs(.x)),
     results = map(model, ~ {
-      if (is.null(.x)) {
-        tibble()
-      } else {
-        tidy(.x, exponentiate = TRUE, conf.int = TRUE)
-      }})) %>%
+  if (is.null(.x)) {
+    tibble()
+  } else {
+    result <- safe_tidy(.x)
+    if (is.null(result)) {
+      tidy(.x, exponentiate = TRUE, conf.int = FALSE) %>%
+        mutate(conf.low = NA_real_, conf.high = NA_real_)
+    } else {
+      result
+    }
+  }
+})) %>%
   select(hospital_id, n, results) %>%
   unnest(results)
 
@@ -2028,11 +2183,18 @@ models_by_hospital_ph_unproned <- unproned_cohort %>%
     error = map(fit, "error"),
         n = map_int(model, ~ if (is.null(.x)) NA_integer_ else nobs(.x)),
     results = map(model, ~ {
-      if (is.null(.x)) {
-        tibble()
-      } else {
-        tidy(.x, exponentiate = TRUE, conf.int = TRUE)
-      }})) %>%
+  if (is.null(.x)) {
+    tibble()
+  } else {
+    result <- safe_tidy(.x)
+    if (is.null(result)) {
+      tidy(.x, exponentiate = TRUE, conf.int = FALSE) %>%
+        mutate(conf.low = NA_real_, conf.high = NA_real_)
+    } else {
+      result
+    }
+  }
+})) %>%
   select(hospital_id, n, results) %>%
   unnest(results)
 
@@ -2287,11 +2449,18 @@ models_by_hospital_prone_no_or <- rose_analytic_df %>%
     error = map(fit, "error"),
         n = map_int(model, ~ if (is.null(.x)) NA_integer_ else nobs(.x)),
     results = map(model, ~ {
-      if (is.null(.x)) {
-        tibble()
-      } else {
-        tidy(.x, exponentiate = TRUE, conf.int = TRUE)
-      }})) %>%
+  if (is.null(.x)) {
+    tibble()
+  } else {
+    result <- safe_tidy(.x)
+    if (is.null(result)) {
+      tidy(.x, exponentiate = TRUE, conf.int = FALSE) %>%
+        mutate(conf.low = NA_real_, conf.high = NA_real_)
+    } else {
+      result
+    }
+  }
+})) %>%
   select(hospital_id, n, results) %>%
   unnest(results)
 
@@ -2306,11 +2475,18 @@ models_by_hospital_hypoxia_no_or <- rose_analytic_df %>%
     error = map(fit, "error"),
         n = map_int(model, ~ if (is.null(.x)) NA_integer_ else nobs(.x)),
     results = map(model, ~ {
-      if (is.null(.x)) {
-        tibble()
-      } else {
-        tidy(.x, exponentiate = TRUE, conf.int = TRUE)
-      }})) %>%
+  if (is.null(.x)) {
+    tibble()
+  } else {
+    result <- safe_tidy(.x)
+    if (is.null(result)) {
+      tidy(.x, exponentiate = TRUE, conf.int = FALSE) %>%
+        mutate(conf.low = NA_real_, conf.high = NA_real_)
+    } else {
+      result
+    }
+  }
+})) %>%
   select(hospital_id, n, results) %>%
   unnest(results)
 
@@ -2325,11 +2501,18 @@ models_by_hospital_prone_no_covid <- rose_analytic_df %>%
     error = map(fit, "error"),
         n = map_int(model, ~ if (is.null(.x)) NA_integer_ else nobs(.x)),
     results = map(model, ~ {
-      if (is.null(.x)) {
-        tibble()
-      } else {
-        tidy(.x, exponentiate = TRUE, conf.int = TRUE)
-      }})) %>%
+  if (is.null(.x)) {
+    tibble()
+  } else {
+    result <- safe_tidy(.x)
+    if (is.null(result)) {
+      tidy(.x, exponentiate = TRUE, conf.int = FALSE) %>%
+        mutate(conf.low = NA_real_, conf.high = NA_real_)
+    } else {
+      result
+    }
+  }
+})) %>%
   select(hospital_id, n, results) %>%
   unnest(results)
 
@@ -2344,11 +2527,18 @@ models_by_hospital_hypoxia_no_covid <- rose_analytic_df %>%
     error = map(fit, "error"),
         n = map_int(model, ~ if (is.null(.x)) NA_integer_ else nobs(.x)),
     results = map(model, ~ {
-      if (is.null(.x)) {
-        tibble()
-      } else {
-        tidy(.x, exponentiate = TRUE, conf.int = TRUE)
-      }})) %>%
+  if (is.null(.x)) {
+    tibble()
+  } else {
+    result <- safe_tidy(.x)
+    if (is.null(result)) {
+      tidy(.x, exponentiate = TRUE, conf.int = FALSE) %>%
+        mutate(conf.low = NA_real_, conf.high = NA_real_)
+    } else {
+      result
+    }
+  }
+})) %>%
   select(hospital_id, n, results) %>%
   unnest(results)
 
@@ -2363,11 +2553,18 @@ models_by_hospital_prone_now <- rose_analytic_df %>%
     error = map(fit, "error"),
         n = map_int(model, ~ if (is.null(.x)) NA_integer_ else nobs(.x)),
     results = map(model, ~ {
-      if (is.null(.x)) {
-        tibble()
-      } else {
-        tidy(.x, exponentiate = TRUE, conf.int = TRUE)
-      }})) %>%
+  if (is.null(.x)) {
+    tibble()
+  } else {
+    result <- safe_tidy(.x)
+    if (is.null(result)) {
+      tidy(.x, exponentiate = TRUE, conf.int = FALSE) %>%
+        mutate(conf.low = NA_real_, conf.high = NA_real_)
+    } else {
+      result
+    }
+  }
+})) %>%
   select(hospital_id, n, results) %>%
   unnest(results)
 
@@ -2382,11 +2579,18 @@ models_by_hospital_hypoxia_now <- rose_analytic_df %>%
     error = map(fit, "error"),
         n = map_int(model, ~ if (is.null(.x)) NA_integer_ else nobs(.x)),
     results = map(model, ~ {
-      if (is.null(.x)) {
-        tibble()
-      } else {
-        tidy(.x, exponentiate = TRUE, conf.int = TRUE)
-      }})) %>%
+  if (is.null(.x)) {
+    tibble()
+  } else {
+    result <- safe_tidy(.x)
+    if (is.null(result)) {
+      tidy(.x, exponentiate = TRUE, conf.int = FALSE) %>%
+        mutate(conf.low = NA_real_, conf.high = NA_real_)
+    } else {
+      result
+    }
+  }
+})) %>%
   select(hospital_id, n, results) %>%
   unnest(results)
 
@@ -2401,11 +2605,18 @@ models_by_hospital_prone_ards <- rose_analytic_df %>%
     error = map(fit, "error"),
         n = map_int(model, ~ if (is.null(.x)) NA_integer_ else nobs(.x)),
     results = map(model, ~ {
-      if (is.null(.x)) {
-        tibble()
-      } else {
-        tidy(.x, exponentiate = TRUE, conf.int = TRUE)
-      }})) %>%
+  if (is.null(.x)) {
+    tibble()
+  } else {
+    result <- safe_tidy(.x)
+    if (is.null(result)) {
+      tidy(.x, exponentiate = TRUE, conf.int = FALSE) %>%
+        mutate(conf.low = NA_real_, conf.high = NA_real_)
+    } else {
+      result
+    }
+  }
+})) %>%
   select(hospital_id, n, results) %>%
   unnest(results)
 
@@ -2420,11 +2631,18 @@ models_by_hospital_hypoxia_ards <- rose_analytic_df %>%
     error = map(fit, "error"),
         n = map_int(model, ~ if (is.null(.x)) NA_integer_ else nobs(.x)),
     results = map(model, ~ {
-      if (is.null(.x)) {
-        tibble()
-      } else {
-        tidy(.x, exponentiate = TRUE, conf.int = TRUE)
-      }})) %>%
+  if (is.null(.x)) {
+    tibble()
+  } else {
+    result <- safe_tidy(.x)
+    if (is.null(result)) {
+      tidy(.x, exponentiate = TRUE, conf.int = FALSE) %>%
+        mutate(conf.low = NA_real_, conf.high = NA_real_)
+    } else {
+      result
+    }
+  }
+})) %>%
   select(hospital_id, n, results) %>%
   unnest(results)
 
@@ -2439,11 +2657,18 @@ models_by_hospital_prone_severe <- rose_analytic_df %>%
     error = map(fit, "error"),
         n = map_int(model, ~ if (is.null(.x)) NA_integer_ else nobs(.x)),
     results = map(model, ~ {
-      if (is.null(.x)) {
-        tibble()
-      } else {
-        tidy(.x, exponentiate = TRUE, conf.int = TRUE)
-      }})) %>%
+  if (is.null(.x)) {
+    tibble()
+  } else {
+    result <- safe_tidy(.x)
+    if (is.null(result)) {
+      tidy(.x, exponentiate = TRUE, conf.int = FALSE) %>%
+        mutate(conf.low = NA_real_, conf.high = NA_real_)
+    } else {
+      result
+    }
+  }
+})) %>%
   select(hospital_id, n, results) %>%
   unnest(results)
 
@@ -2458,11 +2683,18 @@ models_by_hospital_hypoxia_severe <- rose_analytic_df %>%
     error = map(fit, "error"),
         n = map_int(model, ~ if (is.null(.x)) NA_integer_ else nobs(.x)),
     results = map(model, ~ {
-      if (is.null(.x)) {
-        tibble()
-      } else {
-        tidy(.x, exponentiate = TRUE, conf.int = TRUE)
-      }})) %>%
+  if (is.null(.x)) {
+    tibble()
+  } else {
+    result <- safe_tidy(.x)
+    if (is.null(result)) {
+      tidy(.x, exponentiate = TRUE, conf.int = FALSE) %>%
+        mutate(conf.low = NA_real_, conf.high = NA_real_)
+    } else {
+      result
+    }
+  }
+})) %>%
   select(hospital_id, n, results) %>%
   unnest(results)
 
@@ -2476,11 +2708,18 @@ models_by_hospital_hypoxia_unproned <- unproned_cohort %>%
     error = map(fit, "error"),
         n = map_int(model, ~ if (is.null(.x)) NA_integer_ else nobs(.x)),
     results = map(model, ~ {
-      if (is.null(.x)) {
-        tibble()
-      } else {
-        tidy(.x, exponentiate = TRUE, conf.int = TRUE)
-      }})) %>%
+  if (is.null(.x)) {
+    tibble()
+  } else {
+    result <- safe_tidy(.x)
+    if (is.null(result)) {
+      tidy(.x, exponentiate = TRUE, conf.int = FALSE) %>%
+        mutate(conf.low = NA_real_, conf.high = NA_real_)
+    } else {
+      result
+    }
+  }
+})) %>%
   select(hospital_id, n, results) %>%
   unnest(results)
 
@@ -2496,11 +2735,18 @@ models_by_hospital_period_no_or <- rose_analytic_df %>%
     error = map(fit, "error"),
         n = map_int(model, ~ if (is.null(.x)) NA_integer_ else nobs(.x)),
     results = map(model, ~ {
-      if (is.null(.x)) {
-        tibble()
-      } else {
-        tidy(.x, exponentiate = TRUE, conf.int = TRUE)
-      }})) %>%
+  if (is.null(.x)) {
+    tibble()
+  } else {
+    result <- safe_tidy(.x)
+    if (is.null(result)) {
+      tidy(.x, exponentiate = TRUE, conf.int = FALSE) %>%
+        mutate(conf.low = NA_real_, conf.high = NA_real_)
+    } else {
+      result
+    }
+  }
+})) %>%
   select(hospital_id, n, results) %>%
   unnest(results)
 
@@ -2515,11 +2761,18 @@ models_by_hospital_period_prone_no_or <- rose_analytic_df %>%
     error = map(fit, "error"),
         n = map_int(model, ~ if (is.null(.x)) NA_integer_ else nobs(.x)),
     results = map(model, ~ {
-      if (is.null(.x)) {
-        tibble()
-      } else {
-        tidy(.x, exponentiate = TRUE, conf.int = TRUE)
-      }})) %>%
+  if (is.null(.x)) {
+    tibble()
+  } else {
+    result <- safe_tidy(.x)
+    if (is.null(result)) {
+      tidy(.x, exponentiate = TRUE, conf.int = FALSE) %>%
+        mutate(conf.low = NA_real_, conf.high = NA_real_)
+    } else {
+      result
+    }
+  }
+})) %>%
   select(hospital_id,n,  results) %>%
   unnest(results)
 
@@ -2534,11 +2787,18 @@ models_by_hospital_period_no_covid <- rose_analytic_df %>%
     error = map(fit, "error"),
         n = map_int(model, ~ if (is.null(.x)) NA_integer_ else nobs(.x)),
     results = map(model, ~ {
-      if (is.null(.x)) {
-        tibble()
-      } else {
-        tidy(.x, exponentiate = TRUE, conf.int = TRUE)
-      }})) %>%
+  if (is.null(.x)) {
+    tibble()
+  } else {
+    result <- safe_tidy(.x)
+    if (is.null(result)) {
+      tidy(.x, exponentiate = TRUE, conf.int = FALSE) %>%
+        mutate(conf.low = NA_real_, conf.high = NA_real_)
+    } else {
+      result
+    }
+  }
+})) %>%
   select(hospital_id, n, results) %>%
   unnest(results)
 
@@ -2553,11 +2813,18 @@ models_by_hospital_period_prone_no_covid <- rose_analytic_df %>%
     error = map(fit, "error"),
         n = map_int(model, ~ if (is.null(.x)) NA_integer_ else nobs(.x)),
     results = map(model, ~ {
-      if (is.null(.x)) {
-        tibble()
-      } else {
-        tidy(.x, exponentiate = TRUE, conf.int = TRUE)
-      }})) %>%
+  if (is.null(.x)) {
+    tibble()
+  } else {
+    result <- safe_tidy(.x)
+    if (is.null(result)) {
+      tidy(.x, exponentiate = TRUE, conf.int = FALSE) %>%
+        mutate(conf.low = NA_real_, conf.high = NA_real_)
+    } else {
+      result
+    }
+  }
+})) %>%
   select(hospital_id,n,  results) %>%
   unnest(results)
 
@@ -2572,11 +2839,18 @@ models_by_hospital_period_ards <- rose_analytic_df %>%
     error = map(fit, "error"),
         n = map_int(model, ~ if (is.null(.x)) NA_integer_ else nobs(.x)),
     results = map(model, ~ {
-      if (is.null(.x)) {
-        tibble()
-      } else {
-        tidy(.x, exponentiate = TRUE, conf.int = TRUE)
-      }})) %>%
+  if (is.null(.x)) {
+    tibble()
+  } else {
+    result <- safe_tidy(.x)
+    if (is.null(result)) {
+      tidy(.x, exponentiate = TRUE, conf.int = FALSE) %>%
+        mutate(conf.low = NA_real_, conf.high = NA_real_)
+    } else {
+      result
+    }
+  }
+})) %>%
   select(hospital_id, n, results) %>%
   unnest(results)
 
@@ -2591,11 +2865,18 @@ models_by_hospital_period_prone_ards <- rose_analytic_df %>%
     error = map(fit, "error"),
         n = map_int(model, ~ if (is.null(.x)) NA_integer_ else nobs(.x)),
     results = map(model, ~ {
-      if (is.null(.x)) {
-        tibble()
-      } else {
-        tidy(.x, exponentiate = TRUE, conf.int = TRUE)
-      }})) %>%
+  if (is.null(.x)) {
+    tibble()
+  } else {
+    result <- safe_tidy(.x)
+    if (is.null(result)) {
+      tidy(.x, exponentiate = TRUE, conf.int = FALSE) %>%
+        mutate(conf.low = NA_real_, conf.high = NA_real_)
+    } else {
+      result
+    }
+  }
+})) %>%
   select(hospital_id,n,  results) %>%
   unnest(results)
 
@@ -2611,11 +2892,18 @@ models_by_hospital_period_severe <- rose_analytic_df %>%
     error = map(fit, "error"),
         n = map_int(model, ~ if (is.null(.x)) NA_integer_ else nobs(.x)),
     results = map(model, ~ {
-      if (is.null(.x)) {
-        tibble()
-      } else {
-        tidy(.x, exponentiate = TRUE, conf.int = TRUE)
-      }})) %>%
+  if (is.null(.x)) {
+    tibble()
+  } else {
+    result <- safe_tidy(.x)
+    if (is.null(result)) {
+      tidy(.x, exponentiate = TRUE, conf.int = FALSE) %>%
+        mutate(conf.low = NA_real_, conf.high = NA_real_)
+    } else {
+      result
+    }
+  }
+})) %>%
   select(hospital_id, n, results) %>%
   unnest(results)
 
@@ -2630,11 +2918,18 @@ models_by_hospital_period_prone_severe <- rose_analytic_df %>%
     error = map(fit, "error"),
         n = map_int(model, ~ if (is.null(.x)) NA_integer_ else nobs(.x)),
     results = map(model, ~ {
-      if (is.null(.x)) {
-        tibble()
-      } else {
-        tidy(.x, exponentiate = TRUE, conf.int = TRUE)
-      }})) %>%
+  if (is.null(.x)) {
+    tibble()
+  } else {
+    result <- safe_tidy(.x)
+    if (is.null(result)) {
+      tidy(.x, exponentiate = TRUE, conf.int = FALSE) %>%
+        mutate(conf.low = NA_real_, conf.high = NA_real_)
+    } else {
+      result
+    }
+  }
+})) %>%
   select(hospital_id,n,  results) %>%
   unnest(results)
 
@@ -2649,11 +2944,18 @@ models_by_hospital_period_unproned <- unproned_cohort %>%
     error = map(fit, "error"),
         n = map_int(model, ~ if (is.null(.x)) NA_integer_ else nobs(.x)),
     results = map(model, ~ {
-      if (is.null(.x)) {
-        tibble()
-      } else {
-        tidy(.x, exponentiate = TRUE, conf.int = TRUE)
-      }})) %>%
+  if (is.null(.x)) {
+    tibble()
+  } else {
+    result <- safe_tidy(.x)
+    if (is.null(result)) {
+      tidy(.x, exponentiate = TRUE, conf.int = FALSE) %>%
+        mutate(conf.low = NA_real_, conf.high = NA_real_)
+    } else {
+      result
+    }
+  }
+})) %>%
   select(hospital_id, n, results) %>%
   unnest(results)
 }
@@ -2962,10 +3264,10 @@ if(n_hospitals >1){
   tab2_continuous <- CreateTableOne(vars = to_tab, data=continuous, factorVars = factors_tab)
 }
 tab2_excel <- as.data.frame(print(tab2_continuous, printToggle = FALSE, missing = TRUE)) |>
-  mutate(site = site) |>
-  relocate(site, .before = Overall) |>
   rownames_to_column('characteristic') |>
-  rename(percent_missing = Missing)
+  rename(percent_missing = Missing) |>
+  mutate(site = site) |>
+  relocate(site, .after = characteristic)
 write.csv(tab2_excel, file=paste0(project_location, '/project_output_UPLOAD/', site, '_Table_paralytics_continuous_rose.csv'))
 rm(tab2_excel)
 
@@ -3001,10 +3303,10 @@ if(n_hospitals >1){
 }
 
 tab2_excel <- as.data.frame(print(tab2_intermittent, printToggle = FALSE, missing = TRUE)) |>
-  mutate(site = site) |>
-  relocate(site, .before = Overall) |>
   rownames_to_column('characteristic') |>
-  rename(percent_missing = Missing)
+  rename(percent_missing = Missing) |>
+  mutate(site = site) |>
+  relocate(site, .after = characteristic)
 write.csv(tab2_excel, file=paste0(project_location, '/project_output_UPLOAD/', site, '_Table_paralytics_intermittent_rose.csv'))
 rm(tab2_excel)
 

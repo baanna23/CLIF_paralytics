@@ -717,8 +717,6 @@ clif_labs <- clif_labs |>
   inner_join(cohort_ids) |> #NOTE: clif_labs will now include patient_id and encounter_block
   select(-any_of(c('in_cohort', 'lab_name'))) 
 
-gc()
-
 #PaO2 Table
 pao2 <- clif_labs |>
     filter(
@@ -747,6 +745,7 @@ if(fio2_mean > 1){
 #Merge in PaO2 Data Here
 vent_data <- clif_respiratory_support |>
   mutate(hospitalization_id=as.character(hospitalization_id)) |>
+  select(-support, -mode_name, -modality_name, -lpm_set, -pressure_control_set, -pressure_support_set, -flow_rate_set, -inspiratory_time_set, -mean_airway_pressure_obs) |>
   inner_join(cohort_ids) |>
   left_join(vent_times) |>
   collect() |>

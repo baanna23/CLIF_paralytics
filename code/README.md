@@ -16,8 +16,7 @@ This directory contains scripts for the CLIF_paralytics project workflow. The ge
    - cohort_ids: a list of unique identifiers for the study cohort DO NOT SHARE, includes PHI
    - cohort_data: the filtered study cohort data; project_tables folder DO NOT SHARE, includes PHI
    
-2. The 01 script: 01 should run automatically at end of the 00 script. If this does not start automatically, you can also run the analysis script (01) individually, after completing 00
-   This script contains the main analysis code for the project.
+2. Run the 01 script after completing 00. This script contains the main analysis code for the project.
 
    Input: cleaned_cohort_data from 00 file Step 1 above. 
 
