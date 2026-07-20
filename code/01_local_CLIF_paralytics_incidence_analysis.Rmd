@@ -56,6 +56,7 @@ select <- dplyr::select
     site <- config$site_name
     site_time_zone <- config$time_zone
     file_type <- config$file_type
+    hospital_names<- config$hospital_names
   
     rm(config)
   } 
@@ -91,11 +92,6 @@ if (!dir.exists(paste0(project_location, "/project_output_UPLOAD"))) {
   dir.create(paste0(project_location, "/project_output_UPLOAD"))
 }
 
-#Create Sub Folders for Graphs within Project Output Folder
-# Check if the output directory exists; if not, create it
-if (!dir.exists(paste0(project_location, "/project_output_UPLOAD/supplement"))) {
-  dir.create(paste0(project_location, "/project_output_UPLOAD/supplement"))
-}
 ```
 
 ```{r Function to Convert Datetimes to Local Time Zone}
@@ -150,7 +146,9 @@ rose_analytic_df <- rose_analytic_df |>
   code_status_presume = fifelse(!is.na(code_status_category), code_status_category, "Full"), 
 risk_factors_meet_criteria_no_prone=case_when(ph_715==1 & hypoxemia==1  ~"Hypoxemia, Low pH", ph_715==0 & hypoxemia==1 ~"Hypoxemia", ph_715==1 &   hypoxemia==0  ~"Low pH",  ph_715==0 &  hypoxemia==0~"None"), 
 risk_factors_meet_criteria=case_when(ph_715==1 & hypoxemia==1 & early_prone==1 ~"Hypoxemia, Low pH, proned", ph_715==0 & hypoxemia==1 & early_prone==1~"Hypoxemia, proned", ph_715==1 &   hypoxemia==0 & early_prone==1 ~"Low pH, proned",  ph_715==0 &  hypoxemia==0& early_prone==1~"Proned", ph_715==1 & hypoxemia==1 & early_prone==0 ~"Hypoxemia, Low pH", ph_715==0 & hypoxemia==1 & early_prone==0~"Hypoxemia", ph_715==1 &   hypoxemia==0 & early_prone==0 ~"Low pH",  ph_715==0 &  hypoxemia==0& early_prone==0~"None"), 
-  risk_factors_meet_criteria2=case_when(ph_715==1 & hypoxemia==1 & dys_rr==1 ~"Hypoxemia, Low pH, Inc RR", ph_715==0 & hypoxemia==1 & dys_rr==1~"Hypoxemia, Inc RR", ph_715==1 &   hypoxemia==0 & dys_rr==1 ~"Low pH, Inc RR",  ph_715==0 &  hypoxemia==0 & dys_rr==1~"Inc RR", ph_715==1 & hypoxemia==1 & dys_rr==0 ~"Hypoxemia, Low pH", ph_715==0 & hypoxemia==1 & dys_rr==0 ~"Hypoxemia", ph_715==1 &   hypoxemia==0 & dys_rr==0 ~"Low pH",  ph_715==0 &  hypoxemia==0 & dys_rr==0~"None")   
+  risk_factors_meet_criteria2=case_when(ph_715==1 & hypoxemia==1 & dys_rr==1 ~"Hypoxemia, Low pH, Inc RR", ph_715==0 & hypoxemia==1 & dys_rr==1~"Hypoxemia, Inc RR", ph_715==1 &   hypoxemia==0 & dys_rr==1 ~"Low pH, Inc RR",  ph_715==0 &  hypoxemia==0 & dys_rr==1~"Inc RR", ph_715==1 & hypoxemia==1 & dys_rr==0 ~"Hypoxemia, Low pH", ph_715==0 & hypoxemia==1 & dys_rr==0 ~"Hypoxemia", ph_715==1 &   hypoxemia==0 & dys_rr==0 ~"Low pH",  ph_715==0 &  hypoxemia==0 & dys_rr==0~"None"), 
+prone_48_cat = case_when(prone_48==1~"proned", prone_48==0~"unproned"),
+paralytics_48_cat = case_when(any_paralytic_48==1~"paralyzed", any_paralytic_48==0~"not_paralyzed")
   ) |>
   collect()
 
@@ -267,6 +265,8 @@ cat('At', site, length(unique(rose_analytic_df$patient_id)), 'met cohort eligibi
 for (n in 4:nrow(consort)){
 consort$encounters[n] = consort$encounters[n-1] - consort$excluded_encounters[n]
 }
+
+write_csv(consort, paste0(project_location, '/project_output_UPLOAD/', site,'_consort.csv'))
 ```
 
 
@@ -481,6 +481,33 @@ paralytics_per_quarter_by_hospital <- rose_analytic_df |>
    ) |>
   relocate(site, n_hospitals, .before = study_quarter)
 
+#Repeat per quarter per hospital for unproned only
+#Create a Table of N of Patients and Number paralyzed Per Study quarter Per Hospital
+paralytics_per_quarter_by_hospital_unproned <- rose_analytic_df |> 
+  group_by(study_quarter, hospital_id) |>
+    filter(!is.na(hospital_id) & prone_48==0) |>
+  summarise(
+    'site' = site,
+    'n_hospitals' = n_hospitals,
+    'n_patients' = n(),
+    'n_paralytics_12_hr' = sum(any_paralytic_12),
+    'paralytics_12_hr_percent' = mean(any_paralytic_12),
+    'standard_error_12' = sqrt(mean(any_paralytic_12) * (1 - mean(any_paralytic_12)) / n()),
+    'n_paralytics_24_hr' = sum(any_paralytic_24),
+    'paralytics_24_hr_percent' = mean(any_paralytic_24),
+    'standard_error_24' = sqrt(mean(any_paralytic_24) * (1 - mean(any_paralytic_24)) / n()),
+    'n_paralytics_48_hr' = sum(any_paralytic_48),
+    'paralytics_48_hr_percent' = mean(any_paralytic_48),
+    'standard_error_48' = sqrt(mean(any_paralytic_48) * (1 - mean(any_paralytic_48)) / n()),
+    'n_paralytics_72_hr' = sum(any_paralytic_72),
+    'paralytics_72_hr_percent' = mean(any_paralytic_72),
+    'standard_error_72' = sqrt(mean(any_paralytic_72) * (1 - mean(any_paralytic_72)) / n()),
+    'n_paralytics_all' = sum(any_paralytic_ever),
+    'paralytics_percent_all' = mean(any_paralytic_ever),
+    'standard_error_all' = sqrt(mean(any_paralytic_ever) * (1 - mean(any_paralytic_ever)) / n())
+   ) |>
+  relocate(site, n_hospitals, .before = study_quarter)
+
 ```
 
 ```{r Proning}
@@ -638,7 +665,10 @@ write_csv(paralytics_per_quarter_by_hospital, paste0(project_location, '/project
 
 paralytics_per_quarter_no_or<- left_join(paralytics_per_quarter_no_or , prone_per_quarter_no_or)
 paralytics_per_quarter_no_or<- left_join(paralytics_per_quarter_no_or , p_and_p_per_quarter_no_or)
-write_csv(paralytics_per_quarter_no_or, paste0(project_location, '/project_output_UPLOAD/supplement/', site,'_paralytics_per_quarter_no_or.csv'))
+write_csv(paralytics_per_quarter_no_or, paste0(project_location, '/project_output_UPLOAD/', site,'_paralytics_per_quarter_no_or.csv'))
+
+#paralytics variability among unproned patients, nothing to join
+write_csv(paralytics_per_quarter_by_hospital_unproned, paste0(project_location, '/project_output_UPLOAD/', site,'_paralytics_per_quarter_hospital_unproned.csv'))
 
 #prone and paralytics per quarter - this is the main figure
 base_plot <- ggplot(paralytics_per_quarter, aes(x=study_quarter)) +
@@ -689,6 +719,7 @@ ggsave(paste0(site, '_prone_paralytics_by_quarter_48.pdf'),
 ```{r Table 1 generation}
 #Variables to Table 1
 to_tab <- c(
+  'any_paralytic_48',
   'age_at_admission',
   'female',
   'race_ethnicity',
@@ -752,6 +783,7 @@ to_tab <- c(
 
 #Factor Variables
 factors_tab <- c(
+  'any_paralytic_48',
   'female',
   'race_ethnicity',
   'hospital_id',
@@ -858,7 +890,7 @@ tab1_excel <- as.data.frame(print(tab1, printToggle = FALSE, missing = TRUE)) |>
   # Replace cells where the count (number before parenthesis) is < 5
   mutate(across(-c(characteristic, site, percent_missing, p), ~ {
     counts <- as.numeric(gsub("^\\s*([0-9]+)\\s*\\(.*", "\\1", .x))
-    fifelse(!is.na(counts) & counts < 10 & counts > 0 & characteristic !="prone_48...1...." & characteristic !="early_prone...1...."& characteristic !="p_and_p...1...." & characteristic !="dys_rr...1...." & characteristic != "dys_mv...1...." & characteristic != "ph_715...1....", "<10", .x)
+    fifelse(!is.na(counts) & counts < 10 & counts > 0 & characteristic !="prone_48...1...." & characteristic !="early_prone...1...."& characteristic !="p_and_p...1...." & characteristic !="dys_rr...1...." & characteristic != "dys_mv...1...." & characteristic != "ph_715...1...." & characteristic !="initial_paralytic_type...intermittent....", "<10", .x)
     }))
 write.csv(tab1_excel, file=paste0(project_location, '/project_output_UPLOAD/', site, '_Table1_by_Paralytics_by_Hospital.csv'))
 rm(tab1_excel)
@@ -942,6 +974,154 @@ tab1_excel <- as.data.frame(print(tab1, printToggle = FALSE, missing = TRUE)) |>
     }))
 write.csv(tab1_excel, file=paste0(project_location, '/project_output_UPLOAD/', site, '_Table1_by_paralytic_unproned.csv'))
 rm(tab1_excel)
+```
+
+```{r Counts table to determine which hospitals to exclude from meta analysis d/t small counts}
+#look at study periods
+if(n_periods==3){
+all_sp_prone <- rose_analytic_df %>%
+  count(hospital_id, study_period, prone_48_cat, paralytics_48_cat) %>%
+  arrange(hospital_id, study_period, prone_48_cat, paralytics_48_cat)
+all_sp <- rose_analytic_df %>%
+  count(hospital_id, study_period, paralytics_48_cat) %>%
+  arrange(hospital_id, study_period, paralytics_48_cat)
+or_sp_prone <- rose_analytic_df %>%
+  filter(or_before_enrollment == 0) %>%
+  count(hospital_id, study_period, prone_48_cat, paralytics_48_cat) %>%
+  arrange(hospital_id, study_period, prone_48_cat, paralytics_48_cat)
+or_sp <- rose_analytic_df %>%
+  filter(or_before_enrollment == 0) %>%
+  count(hospital_id, study_period, paralytics_48_cat) %>%
+  arrange(hospital_id, study_period, paralytics_48_cat)
+covid_sp_prone <- rose_analytic_df %>%
+  filter(covid_positive == 0) %>%
+  count(hospital_id, study_period, prone_48_cat, paralytics_48_cat) %>%
+  arrange(hospital_id, study_period, prone_48_cat, paralytics_48_cat)
+covid_sp <- rose_analytic_df %>%
+  filter(covid_positive == 0) %>%
+  count(hospital_id, study_period, paralytics_48_cat) %>%
+  arrange(hospital_id, study_period, paralytics_48_cat)
+ards_sp_prone <- rose_analytic_df %>%
+  filter(ards_icd_10 == 1) %>%
+  count(hospital_id, study_period, prone_48_cat, paralytics_48_cat) %>%
+  arrange(hospital_id, study_period, prone_48_cat, paralytics_48_cat)
+ards_sp <- rose_analytic_df %>%
+  filter(ards_icd_10 == 1) %>%
+  count(hospital_id, study_period, paralytics_48_cat) %>%
+  arrange(hospital_id, study_period, paralytics_48_cat)
+severe_sp_prone <- rose_analytic_df %>%
+  filter(severe_ards == 1) %>%
+  count(hospital_id, study_period, prone_48_cat, paralytics_48_cat) %>%
+  arrange(hospital_id, study_period, prone_48_cat, paralytics_48_cat)
+severe_sp <- rose_analytic_df %>%
+  filter(severe_ards == 1) %>%
+  count(hospital_id, study_period, paralytics_48_cat) %>%
+  arrange(hospital_id, study_period, paralytics_48_cat)
+} 
+
+#all sites
+all_prone <- rose_analytic_df %>%
+  count(hospital_id, prone_48_cat, paralytics_48_cat) %>%
+  arrange(hospital_id, prone_48_cat, paralytics_48_cat)
+ph <- rose_analytic_df %>%
+  filter(prone_48 == 0) %>%
+  count(hospital_id, ph_715, paralytics_48_cat) %>%
+  arrange(hospital_id, ph_715, paralytics_48_cat)
+rr <- rose_analytic_df %>%
+  filter(prone_48 == 0) %>%
+  count(hospital_id, dys_rr, paralytics_48_cat) %>%
+  arrange(hospital_id, dys_rr, paralytics_48_cat)
+mv <- rose_analytic_df %>%
+  filter(prone_48 == 0) %>%
+  count(hospital_id, dys_mv, paralytics_48_cat) %>%
+  arrange(hospital_id, dys_mv, paralytics_48_cat)
+or_prone <- rose_analytic_df %>%
+  filter(or_before_enrollment == 0) %>%
+  count(hospital_id, prone_48_cat, paralytics_48_cat) %>%
+  arrange(hospital_id, prone_48_cat, paralytics_48_cat)
+covid_prone <- rose_analytic_df %>%
+  filter(covid_positive == 0) %>%
+  count(hospital_id, prone_48_cat, paralytics_48_cat) %>%
+  arrange(hospital_id, prone_48_cat, paralytics_48_cat)
+ards_prone <- rose_analytic_df %>%
+  filter(ards_icd_10 == 1) %>%
+  count(hospital_id, prone_48_cat, paralytics_48_cat) %>%
+  arrange(hospital_id, prone_48_cat, paralytics_48_cat)
+severe_prone <- rose_analytic_df %>%
+  filter(severe_ards == 1) %>%
+  count(hospital_id, prone_48_cat, paralytics_48_cat) %>%
+  arrange(hospital_id, prone_48_cat, paralytics_48_cat)
+icu <- rose_analytic_df %>%
+  count(enrollment_location_type, prone_48_cat, paralytics_48_cat) %>%
+  arrange(enrollment_location_type, prone_48_cat, paralytics_48_cat)
+
+
+#Summary Table With All Models
+if(n_periods==3){
+  main_table <- bind_rows(
+    data.frame(site = c("whole - prone")),
+    all_prone,
+    data.frame(site = c("whole - SP")),
+    all_sp,
+    data.frame(site = c("Whole both")),
+    all_sp_prone,
+    data.frame(site = c("No_or - prone")),
+    or_prone,
+    data.frame(site = c("No_or - SP")),
+    or_sp,
+    data.frame(site = c("No_or both")),
+    or_sp_prone,
+    data.frame(site = c("No_covid - prone")),
+    covid_prone,
+    data.frame(site = c("No_covid - SP")),
+    covid_sp,
+    data.frame(site = c("No_covid both")),
+    covid_sp_prone,
+    data.frame(site = c("ards - prone")),
+    ards_prone,
+    data.frame(site = c("ards - SP")),
+    ards_sp,
+    data.frame(site = c("ards both")),
+    all_sp_prone,
+    data.frame(site = c("severe - prone")),
+    severe_prone,
+    data.frame(site = c("severe - SP")),
+    severe_sp,
+    data.frame(site = c("severe both")),
+    severe_sp_prone,
+    data.frame(site = c("icu")),
+    icu,
+    data.frame(site = c("ph")),
+    ph,
+    data.frame(site = c("rr")),
+    rr,
+    data.frame(site = c("mv")),
+    mv
+)
+} else{
+  main_table <- bind_rows(
+    data.frame(site = c("whole - prone")),
+    all_prone,
+    data.frame(site = c("No_or - prone")),
+    or_prone,
+        data.frame(site = c("No_covid - prone")),
+    covid_prone,
+        data.frame(site = c("ards - prone")),
+    ards_prone,
+        data.frame(site = c("severe - prone")),
+    severe_prone,
+    data.frame(site = c("icu")),
+    icu,
+    data.frame(site = c("ph")),
+    ph,
+    data.frame(site = c("rr")),
+    rr,
+    data.frame(site = c("mv")),
+    mv
+    )
+}
+# Write the table to a CSV file
+write.csv(main_table, paste0(project_location, '/project_output_UPLOAD/', site, '_ma_counts_by_period_hospital_paralytic.csv'))
 
 ```
 
@@ -994,7 +1174,9 @@ rose_analytic_df <- rose_analytic_df |>
   mutate(study_period2 = study_period,
   hospital_id2 = as.factor(as.character(hospital_id)),
   any_paralytic_482 = any_paralytic_48,
-  para_to_prone_numeric = as.numeric(para_to_prone))
+  para_to_prone_numeric = as.numeric(as.character(para_to_prone, units = "hours"))
+  )
+
 
 to_tab <- c(
   'any_paralytic_12',
@@ -1011,15 +1193,16 @@ to_tab <- c(
   'prone_48',
   'early_prone',
   'min_ph',
- # 'total_continuous_para_hours_prior',
+  'para_to_prone_numeric',
+   # 'total_continuous_para_hours_prior',
   'total_continuous_para_hours_post',
   'total_continuous_para_hours_all',
   'total_continuous_para_hours_48h', 
- 'para_to_prone_numeric',
   'study_period2',
   'hospital_id2',
   'any_paralytic_482',
-   'continous_paralytic_given'
+  'continous_paralytic_given',
+  'initial_paralytic_type'
 
 )
 
@@ -1037,7 +1220,8 @@ factors_tab <- c(
   'death_or_hospice',
   'prone_48',
   'early_prone',
-    'continous_paralytic_given'
+  'continous_paralytic_given',
+  'initial_paralytic_type'
 )
 
 rose_analytic_df <- rose_analytic_df |>
@@ -1045,6 +1229,9 @@ rose_analytic_df <- rose_analytic_df |>
 
 # Get all continuous variables (those not in factors_tab)
 continuous_vars <- setdiff(to_tab, factors_tab)
+
+permitted <- c("n", "any_paralytic_12 = 1 (%)", "any_paralytic_24 = 1 (%)", "any_paralytic_48 = 1 (%)", "any_paralytic_72 = 1 (%)", "any_paralytic_ever = 1 (%)", "in_hosp_death = 1 (%)",  "death_or_hospice = 1 (%)"  , "criteria_to_paralytic (mean (SD))", "ett_to_paralytic (mean (SD))" , "first_rose_pf_all (mean (SD))" , "pfround_paralytic (mean (SD))",  "prone_48 = 1 (%)"  , "early_prone = 1 (%)"  , "min_ph (mean (SD))" , "para_to_prone_numeric (mean (SD))" , "total_continuous_para_hours_post (mean (SD))" , "total_continuous_para_hours_all (mean (SD))" ,  "total_continuous_para_hours_48h (mean (SD))" , "study_period2 (%)" , "   Post-ROSE/COVID" , "   Post-ROSE/Post-COVID" , "   Pre-ROSE/Pre-COVID" ,    "any_paralytic_482 = 1 (%)" , "continous_paralytic_given (%)"  , "   atracurium"  , "   cisatracurium"  , "   rocuronium"    ,  "   vecuronium"   , "initial_paralytic_type = intermittent (%)",  "criteria_to_paralytic (median [IQR])", "ett_to_paralytic (median [IQR])", "first_rose_pf_all (median [IQR])", "pfround_paralytic (median [IQR])" , "min_ph (median [IQR])", "para_to_prone_numeric (median [IQR])" , "total_continuous_para_hours_post (median [IQR])", "total_continuous_para_hours_all (median [IQR])" , "total_continuous_para_hours_48h (median [IQR])")
+permitted<- c(permitted, hospital_names)
 
 # Create Table 2, stratified by study period (or unstratified if only one period)
 if (n_periods >1) {
@@ -1056,6 +1243,9 @@ if (n_periods >1) {
     rownames_to_column('characteristic') |>
     rename(percent_missing = Missing) |>
     select(-test)
+  tab2_excel<- tab2_excel |>
+    filter(characteristic %in% permitted)  
+  
   write.csv(tab2_excel, file=paste0(project_location, '/project_output_UPLOAD/', site, '_Table_paralytics_Outcomes_Period.csv'))
 } 
   
@@ -1068,6 +1258,10 @@ tab2_excel <- as.data.frame(print(tab2, printToggle = FALSE, missing = TRUE)) |>
   rownames_to_column('characteristic') |>
   rename(percent_missing = Missing) |>
   select(-test)
+
+tab2_excel<- tab2_excel |>
+    filter(characteristic %in% permitted)  
+
 write.csv(tab2_excel, file=paste0(project_location, '/project_output_UPLOAD/', site, '_Table_paralytics_Outcomes_Paralytics.csv'))
 
  # Table with Median [IQR]
@@ -1075,6 +1269,10 @@ write.csv(tab2_excel, file=paste0(project_location, '/project_output_UPLOAD/', s
   rownames_to_column('characteristic') |>
   rename(percent_missing = Missing) |>
   select(-test)
+  
+  tab2_median<- tab2_median |>
+    filter(characteristic %in% permitted)  
+  
   write.csv(tab2_median, file=paste0(project_location, '/project_output_UPLOAD/', site, '_Table_paralytics_Outcomes_Paralytics_median.csv'))
 
 #Now Create a Table 2, Stratified by Hospital
@@ -1096,7 +1294,14 @@ tab2_excel <- as.data.frame(print(tab2, printToggle = FALSE, missing = TRUE)) |>
   rownames_to_column('characteristic') |>
   rename(percent_missing = Missing) 
 }
+  tab2_excel<- tab2_excel |>
+    filter(characteristic %in% permitted)  
 write.csv(tab2_excel, file=paste0(project_location, '/project_output_UPLOAD/', site, '_Table_paralytics_Outcomes_by_Hospital.csv'))
+
+
+permitted_gt <- c("any_paralytic_12", "0", "1", "any_paralytic_24", "any_paralytic_72", "any_paralytic_ever", "in_hosp_death", "Unknown", "death_or_hospice"  , "criteria_to_paralytic", "ett_to_paralytic" , "first_rose_pf_all" , "pfround_paralytic",  "prone_48"  , "early_prone"  , "min_ph" , "para_to_prone_numeric" , "total_continuous_para_hours_post" , "total_continuous_para_hours_all" ,  "total_continuous_para_hours_48h" , "study_period2" , "Post-ROSE/COVID" , "Post-ROSE/Post-COVID" , "Pre-ROSE/Pre-COVID" ,    "any_paralytic_482" , "continous_paralytic_given"  , "atracurium"  , "cisatracurium"  , "rocuronium"    ,  "vecuronium"   , "initial_paralytic_type",  "criteria_to_paralytic", "ett_to_paralytic", "first_rose_pf_all", "pfround_paralytic" , "min_ph", "para_to_prone_numeric" , "total_continuous_para_hours_post", "total_continuous_para_hours_all" , "total_continuous_para_hours_48h", "initial_paralytic_type", "continuous", "intermittent", "hospital_id2")
+permitted_gt<- c(permitted_gt, hospital_names)
+
 
 #multiple factors for stratification to have interpretable median values for paralytic timing
 #study period and paralytic use
@@ -1113,6 +1318,9 @@ if (n_periods >1) {
 
 tab2_gt <- as_tibble(tab2_gt)
 
+  tab2_gt<- tab2_gt |>
+    filter(`**Characteristic**` %in% permitted_gt)   
+
 write.csv(tab2_gt, file=paste0(project_location, '/project_output_UPLOAD/', site, '_Table_paralytics_Outcomes_by_paralytics_period.csv'))
 
 #median
@@ -1127,6 +1335,9 @@ write.csv(tab2_gt, file=paste0(project_location, '/project_output_UPLOAD/', site
         missing = "ifany"))
 
 tab2_gt <- as_tibble(tab2_gt)
+
+  tab2_gt<- tab2_gt |>
+    filter(`**Characteristic**` %in% permitted_gt)   
 
 write.csv(tab2_gt, file=paste0(project_location, '/project_output_UPLOAD/', site, '_Table_paralytics_Outcomes_by_paralytics_period_median.csv'))
 
@@ -1146,6 +1357,9 @@ if (n_periods >1) {
 
 tab2_gt <- as_tibble(tab2_gt)
 
+  tab2_gt<- tab2_gt |>
+    filter(`**Characteristic**` %in% permitted_gt)   
+  
 write.csv(tab2_gt, file=paste0(project_location, '/project_output_UPLOAD/', site, '_Table_paralytics_Outcomes_by_paralytics_period.csv'))
 
 #median
@@ -1161,12 +1375,14 @@ write.csv(tab2_gt, file=paste0(project_location, '/project_output_UPLOAD/', site
 
 tab2_gt <- as_tibble(tab2_gt)
 
+  tab2_gt<- tab2_gt |>
+    filter(`**Characteristic**` %in% permitted_gt)   
+  
 write.csv(tab2_gt, file=paste0(project_location, '/project_output_UPLOAD/', site, '_Table_paralytics_Outcomes_by_paralytics_period_median.csv'))
 
 }
 
 #stratified by hospital and paralytic use
-if (n_hospitals>1) {
   tab2_gt <- rose_analytic_df |>
   select(all_of(to_tab), hospital_id, any_paralytic_48) |>
       filter(!is.na(hospital_id)) |>
@@ -1180,6 +1396,9 @@ if (n_hospitals>1) {
 
 tab2_gt <- as_tibble(tab2_gt)
 
+  tab2_gt<- tab2_gt |>
+    filter(`**Characteristic**` %in% permitted_gt)   
+  
 write.csv(tab2_gt, file=paste0(project_location, '/project_output_UPLOAD/', site, '_Table_paralytics_Outcomes_by_paralytics_hospital.csv'))
 
 #median
@@ -1196,13 +1415,34 @@ write.csv(tab2_gt, file=paste0(project_location, '/project_output_UPLOAD/', site
 
 tab2_gt <- as_tibble(tab2_gt)
 
+  tab2_gt<- tab2_gt |>
+    filter(`**Characteristic**` %in% permitted_gt)   
+  
 write.csv(tab2_gt, file=paste0(project_location, '/project_output_UPLOAD/', site, '_Table_paralytics_Outcomes_by_paralytics_hospital_median.csv'))
-}
 
 
-#median - among proned patients
+#stratified by hospital and paralytic use, unproned
   tab2_gt <- rose_analytic_df |>
-          filter(prone_48==1) |>
+  select(all_of(to_tab), hospital_id, any_paralytic_48) |>
+      filter(!is.na(hospital_id) & prone_48==0) |>
+  tbl_strata(
+    strata = hospital_id,
+    .tbl_fun = ~ .x |>
+      tbl_summary(
+        by = any_paralytic_48,
+        statistic = list(all_continuous() ~ "{mean} ({sd})"),
+        missing = "ifany"))
+
+tab2_gt <- as_tibble(tab2_gt)
+
+  tab2_gt<- tab2_gt |>
+    filter(`**Characteristic**` %in% permitted_gt)   
+  
+  write.csv(tab2_gt, file=paste0(project_location, '/project_output_UPLOAD/', site, '_Table_paralytics_Outcomes_by_paralytics_hospital_unproned.csv'))
+
+#median - among unproned patients
+  tab2_gt <- rose_analytic_df |>
+          filter(prone_48==0) |>
   select(all_of(to_tab), hospital_id, any_paralytic_48) |>
       filter(!is.na(hospital_id)) |>
   tbl_strata(
@@ -1215,7 +1455,11 @@ write.csv(tab2_gt, file=paste0(project_location, '/project_output_UPLOAD/', site
 
 tab2_gt <- as_tibble(tab2_gt)
 
-write.csv(tab2_gt, file=paste0(project_location, '/project_output_UPLOAD/', site, '_Table_paralytics_Outcomes_by_paralytics_hospital_median_proned.csv'))
+  tab2_gt<- tab2_gt |>
+    filter(`**Characteristic**` %in% permitted_gt)   
+  
+  write.csv(tab2_gt, file=paste0(project_location, '/project_output_UPLOAD/', site, '_Table_paralytics_Outcomes_by_paralytics_hospital_median_unproned.csv'))
+
 
 ```
 
@@ -2198,6 +2442,54 @@ models_by_hospital_ph_unproned <- unproned_cohort %>%
   select(hospital_id, n, results) %>%
   unnest(results)
 
+models_by_hospital_rr_unproned <- unproned_cohort %>%
+  group_by(hospital_id) %>%
+    filter(!is.na(hospital_id)) %>%
+  nest() %>%
+  mutate(fit = map(data, ~ safe_glm(.x, c("rr_diff_max_scale"))),
+    model = map(fit, "result"),
+    error = map(fit, "error"),
+        n = map_int(model, ~ if (is.null(.x)) NA_integer_ else nobs(.x)),
+    results = map(model, ~ {
+  if (is.null(.x)) {
+    tibble()
+  } else {
+    result <- safe_tidy(.x)
+    if (is.null(result)) {
+      tidy(.x, exponentiate = TRUE, conf.int = FALSE) %>%
+        mutate(conf.low = NA_real_, conf.high = NA_real_)
+    } else {
+      result
+    }
+  }
+})) %>%
+  select(hospital_id, n, results) %>%
+  unnest(results)
+
+models_by_hospital_mv_unproned <- unproned_cohort %>%
+  group_by(hospital_id) %>%
+    filter(!is.na(hospital_id)) %>%
+  nest() %>%
+  mutate(fit = map(data, ~ safe_glm(.x, c("mv_obs_max_scale"))),
+    model = map(fit, "result"),
+    error = map(fit, "error"),
+        n = map_int(model, ~ if (is.null(.x)) NA_integer_ else nobs(.x)),
+    results = map(model, ~ {
+  if (is.null(.x)) {
+    tibble()
+  } else {
+    result <- safe_tidy(.x)
+    if (is.null(result)) {
+      tidy(.x, exponentiate = TRUE, conf.int = FALSE) %>%
+        mutate(conf.low = NA_real_, conf.high = NA_real_)
+    } else {
+      result
+    }
+  }
+})) %>%
+  select(hospital_id, n, results) %>%
+  unnest(results)
+
 
 #Summary Table With All Models
 if(n_periods==3){
@@ -2240,8 +2532,12 @@ if(n_periods==3){
     models_by_hospital_icu_hypoxia_proned, 
     data.frame(site = c("ph - hospital")),
     models_by_hospital_ph,
-    data.frame(site = c("ph - hospital")),
-    models_by_hospital_ph_unproned
+    data.frame(site = c("ph - hospital unproned")),
+    models_by_hospital_ph_unproned,
+    data.frame(site = c("rr - hospital unproned")),
+    models_by_hospital_rr_unproned,
+    data.frame(site = c("mv - hospital unproned")),
+    models_by_hospital_mv_unproned
     )
 } else{
   main_table <- bind_rows(
@@ -2271,10 +2567,24 @@ if(n_periods==3){
     models_by_hospital_icu_hypoxia_proned,
     data.frame(site = c("ph - hospital")),
     models_by_hospital_ph,
-    data.frame(site = c("ph - hospital")),
-    models_by_hospital_ph_unproned
+    data.frame(site = c("ph - hospital unproned")),
+    models_by_hospital_ph_unproned,
+    data.frame(site = c("rr - hospital unproned")),
+    models_by_hospital_rr_unproned,
+    data.frame(site = c("mv - hospital unproned")),
+    models_by_hospital_mv_unproned
     )
 }
+
+main_table<- main_table |>
+  mutate(
+    estimate= case_when(n>=10~estimate),
+    std.error= case_when(n>=10~std.error),
+    statistic= case_when(n>=10~statistic),
+    p.value= case_when(n>=10~p.value),
+    conf.low= case_when(n>=10~conf.low),
+    conf.high= case_when(n>=10~conf.high))
+         
 # Write the table to a CSV file
 write.csv(main_table, paste0(project_location, '/project_output_UPLOAD/', site, '_univariate_models_hospital.csv'))
 
@@ -3202,14 +3512,90 @@ if (n_hospitals>1) {
 model_form_step <- death_or_hospice ~ factor(hospital_id) + factor(any_paralytic_48) + bmi_scale + age_scale + sofa_score_scale  + or_before_enrollment + first_rose_pf_all_scale + nee_pressor_dose + female  + deep_rass_max + covid_positive + compliance_scale + prone_48 +ards_icd_10
   main_mod <- glm(model_form_step, data = landmark %>% filter(!is.na(hospital_id)), family=binomial)
 } else {
-model_form_step <- death_or_hospice ~  factor(any_paralytic_48) + bmi_scale + age_scale + sofa_score_scale  + or_before_enrollment + first_rose_pf_all_scale + nee_pressor_dose + female  + factor(deep_rass_max) + covid_positive + compliance_scale + prone_48+ards_icd_10
+model_form_step <- death_or_hospice ~  factor(any_paralytic_48) + bmi_scale + age_scale + sofa_score_scale  + or_before_enrollment + first_rose_pf_all_scale + nee_pressor_dose + female  + (deep_rass_max) + covid_positive + compliance_scale + prone_48+ards_icd_10
 main_mod <- glm(model_form_step, data = landmark, family=binomial, na.action = na.omit)
 }
 
 summary(main_mod)
 mortality_multivariate_la_2 <- model_summary_table(main_mod)
 
+safe_glm <- safely(function(df, predictor_var) {
+  model_form <- reformulate(termlabels = predictor_var, response = "death_or_hospice")
+  glm(model_form, data = df, family = binomial, na.action = na.omit)
+})
 
+mortality_by_hospital_a <- landmark %>%
+  group_by(hospital_id) %>%
+    filter(!is.na(hospital_id)) %>%
+  nest() %>%
+  mutate(fit = map(data, ~ safe_glm(.x, c("any_paralytic_48", "bmi_scale", "age_scale", "sofa_score_scale", "or_before_enrollment", "first_rose_pf_all_scale", "nee_pressor_dose", "female", "deep_rass_max", "covid_positive", "compliance_scale", "prone_48", "ards_icd_10"))),
+    model = map(fit, "result"),
+    error = map(fit, "error"),
+        n = map_int(model, ~ if (is.null(.x)) NA_integer_ else nobs(.x)),
+results = map(model, ~ {
+  if (is.null(.x)) {
+    tibble()
+  } else {
+    result <- safe_tidy(.x)
+    if (is.null(result)) {
+      tidy(.x, exponentiate = TRUE, conf.int = FALSE) %>%
+        mutate(conf.low = NA_real_, conf.high = NA_real_)
+    } else {
+      result
+    }
+  }
+})) %>%
+  select(hospital_id, n, results) %>%
+  unnest(results)
+
+
+mortality_by_hospital_a_some <- landmark %>%
+  group_by(hospital_id) %>%
+    filter(!is.na(hospital_id)) %>%
+  nest() %>%
+  mutate(fit = map(data, ~ safe_glm(.x, c("any_paralytic_48",  "age_scale", "sofa_score_scale", "or_before_enrollment", "first_rose_pf_all_scale", "nee_pressor_dose",  "covid_positive",  "prone_48", "ards_icd_10"))),
+    model = map(fit, "result"),
+    error = map(fit, "error"),
+        n = map_int(model, ~ if (is.null(.x)) NA_integer_ else nobs(.x)),
+results = map(model, ~ {
+  if (is.null(.x)) {
+    tibble()
+  } else {
+    result <- safe_tidy(.x)
+    if (is.null(result)) {
+      tidy(.x, exponentiate = TRUE, conf.int = FALSE) %>%
+        mutate(conf.low = NA_real_, conf.high = NA_real_)
+    } else {
+      result
+    }
+  }
+})) %>%
+  select(hospital_id, n, results) %>%
+  unnest(results)
+
+mortality_by_hospital <- landmark %>%
+  group_by(hospital_id) %>%
+    filter(!is.na(hospital_id)) %>%
+  nest() %>%
+  mutate(fit = map(data, ~ safe_glm(.x, "any_paralytic_48")),
+    model = map(fit, "result"),
+    error = map(fit, "error"),
+        n = map_int(model, ~ if (is.null(.x)) NA_integer_ else nobs(.x)),
+results = map(model, ~ {
+  if (is.null(.x)) {
+    tibble()
+  } else {
+    result <- safe_tidy(.x)
+    if (is.null(result)) {
+      tidy(.x, exponentiate = TRUE, conf.int = FALSE) %>%
+        mutate(conf.low = NA_real_, conf.high = NA_real_)
+    } else {
+      result
+    }
+  }
+})) %>%
+  select(hospital_id, n, results) %>%
+  unnest(results)
 
 #Summary Table With All Models
 main_table <- bind_rows(
@@ -3224,7 +3610,14 @@ main_table <- bind_rows(
   data.frame(site = c("Multivariate, landmark analysis")),
   mortality_multivariate_la,
   data.frame(site = c("Multivariate, landmark analysis 2")),
-  mortality_multivariate_la_2
+  mortality_multivariate_la_2, 
+  data.frame(site = ("Hospital_landmark, unadjusted")),
+  mortality_by_hospital,
+  data.frame(site = ("Hospital_landmark, adjusted some")),
+  mortality_by_hospital_a_some,
+  data.frame(site = ("Hospital_landmark, adjusted full")),
+  mortality_by_hospital_a,
+  
 )
 # Write the table to a CSV file
 write.csv(main_table, paste0(project_location, '/project_output_UPLOAD/', site, '_mortality_models.csv'))
@@ -3233,11 +3626,10 @@ write.csv(main_table, paste0(project_location, '/project_output_UPLOAD/', site, 
 
 ```{r Descriptive data for paralytic use continuous/not among ALL patients who meet ROSE criteria}
 #Look at use of continuous vs intermittent pushes, and how many intermittent pushes
-total_possible<- nrow(rose_analytic_df)
 
 #continuous
 continuous<- rose_analytic_df |>
-  filter(any_paralytic_48==1) |>
+  filter(any_paralytic_48==1 & initial_paralytic_type=="continuous") |>
   mutate(ett_to_paralytic_c_all=as.numeric(ett_to_paralytic_c_all)/60/60/24, 
          any_proning=fifelse(!is.na(prone_episodes), 1, 0))
   
@@ -3273,14 +3665,13 @@ rm(tab2_excel)
 
 #intermittent
 intermittent<- rose_analytic_df |>
-  filter(intermittent_para48>2) |>
+  filter(any_paralytic_48==1 &initial_paralytic_type=="intermittent") |>
     mutate(ett_to_paralytic_i_all=as.numeric(ett_to_paralytic_i_all)/60/60/24, 
          any_proning=fifelse(!is.na(prone_episodes), 1, 0))
 
 to_tab <- c(
   'intermittent_paralytic_given',
   'prone_48', 
-  'ratio_at_paralytics_i_all', 
   'hospital_id',
   'sars_cov2_positive',
   'enrollment_location_type', 
@@ -3297,16 +3688,22 @@ factors_tab <- c(
 )
 
 if(n_hospitals >1){
-  tab2_intermittent <- CreateTableOne(vars = to_tab, data=continuous %>% filter(!is.na(hospital_id)), factorVars = factors_tab, strata="hospital_id")
+  tab2_intermittent <- CreateTableOne(vars = to_tab, data=intermittent %>% filter(!is.na(hospital_id)), factorVars = factors_tab, strata="hospital_id")
 }else {
-  tab2_intermittent <- CreateTableOne(vars = to_tab, data=continuous, factorVars = factors_tab)
+  tab2_intermittent <- CreateTableOne(vars = to_tab, data=intermittent, factorVars = factors_tab)
 }
 
 tab2_excel <- as.data.frame(print(tab2_intermittent, printToggle = FALSE, missing = TRUE)) |>
   rownames_to_column('characteristic') |>
   rename(percent_missing = Missing) |>
   mutate(site = site) |>
-  relocate(site, .after = characteristic)
+  relocate(site, .after = characteristic) |>
+  # Replace cells where the count (number before parenthesis) is < 10
+  mutate(across(-c(characteristic, site, percent_missing), ~ {
+    counts <- as.numeric(gsub("^\\s*([0-9]+)\\s*\\(.*", "\\1", .x))
+    fifelse(!is.na(counts) & counts < 10 & counts > 0  & characteristic != "n" & characteristic !="then_paralytic_c = 1 (%)", "<10"
+            , .x)
+    }))
 write.csv(tab2_excel, file=paste0(project_location, '/project_output_UPLOAD/', site, '_Table_paralytics_intermittent_rose.csv'))
 rm(tab2_excel)
 
@@ -3315,7 +3712,7 @@ rm(tab2_excel)
 
 ```{r Last Piece Create a Table with Observed and Expected Paralytic Counts/Rates by Hospital and proning status}
 #This Aggregate Data Will be Used for Risk and Reliability Adjusted Paralytic Rate Estimates by Hospital
-#Generate Paralytics Propensity Score (Don't Account for Hospital or study period Here)
+#Generate Paralytics Propensity Score (Don't Account for Hospital Here)
 alt_form <- any_paralytic_48 ~  first_rose_pf_all_scale + ph_715 + prone_48 + study_period
 
 alt_mod <- glm(alt_form,
@@ -3392,7 +3789,7 @@ df_agg_para_prone_status <- df |>
 write.csv(df_agg_para_prone_status, paste0(project_location, '/project_output_UPLOAD/', site, '_aggregate_expected_paralytics_wprone_Status.csv'))
 
 #This Aggregate Data Will be Used for Risk and Reliability Adjusted Paralytic Rate Estimates by Hospital, proning
-#Generate Paralytics Propensity Score (Don't Account for Hospital or proning status Here)
+#Generate Paralytics Propensity Score (Don't Account for Hospital, period, or proning status Here)
 alt_form <- any_paralytic_48 ~ first_rose_pf_all_scale + ph_715  
 
 alt_mod <- glm(alt_form,

@@ -745,7 +745,7 @@ if(fio2_mean > 1){
 #Merge in PaO2 Data Here
 vent_data <- clif_respiratory_support |>
   mutate(hospitalization_id=as.character(hospitalization_id)) |>
-  select(-support, -mode_name, -modality_name, -lpm_set, -pressure_control_set, -pressure_support_set, -flow_rate_set, -inspiratory_time_set, -mean_airway_pressure_obs) |>
+  select(-any_of(c("mode_name", "lpm_set", "pressure_control_set", "pressure_support_set", "flow_rate_set", "inspiratory_time_set", "mean_airway_pressure_obs"))) |>
   inner_join(cohort_ids) |>
   left_join(vent_times) |>
   collect() |>
@@ -757,7 +757,7 @@ vent_data <- clif_respiratory_support |>
   mutate(recorded_dttm=as.POSIXct(recorded_dttm, tz= 'UTC')) |> #to merge with pao2 data
   ungroup() |>
   #Bring in PaO2 Here and Then Fill Again
-  join(pao2, how ='full') |>
+  full_join(pao2) |>
   group_by(patient_id, encounter_block) |>
   fill(vent_episode_end, vent_episode_start, .direction = 'downup') |>
   filter(recorded_dttm>=as.POSIXct(vent_episode_start, tz="UTC") & recorded_dttm<=as.POSIXct(vent_episode_end, tz="UTC")) |>
@@ -836,7 +836,8 @@ vent_data <- vent_data |>
   mutate(ahrf_300 = fifelse(
     (pf_ratio <= 300 | sf_ratio <= 300) %in% TRUE, 1, 0)) 
 
-vent_data <- unique(vent_data) #this takes awhile
+vent_data <- vent_data |>
+  funique()
 
 #total number of people in population, by year
 year <- vent_data |>
