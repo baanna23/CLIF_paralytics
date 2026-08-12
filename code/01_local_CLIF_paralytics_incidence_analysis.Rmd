@@ -123,11 +123,13 @@ rose_analytic_df <- fn.timezone_tolocal(rose_analytic_df)
 
 set.seed(32284) #For Reproducibility
 
+missing_enrollment_data <- sum(is.na(rose_analytic_df$days_admit_to_enroll))
+
 rose_analytic_df <- rose_analytic_df |> 
   filter(!is.na(days_admit_to_enroll)) |>
   mutate(counter=1,
   tv_cc_kg=set_tv_enrollment / study_weight_kg, 
-  early_prone = fifelse(as.POSIXct(first_prone_time) <= as.POSIXct(t_rose_first), 1, 0), #Final potential Exclusion, if proned at time of meeting criteria
+  early_prone = case_when(is.na(first_prone_time)~0,  as.POSIXct(first_prone_time) > as.POSIXct(t_rose_first)~0, as.POSIXct(first_prone_time) <= as.POSIXct(t_rose_first)~ 1), #Final potential Exclusion, if proned at time of meeting criteria
   prone_48 = (as.POSIXct(first_prone_time)<=as.POSIXct(t_rose_first)+dhours(48)), #includes early prone before meeting criteria
   prone_48 = fifelse(prone_48==FALSE | is.na(prone_48), 0, 1), 
   prone_all = fifelse(is.na(prone_episodes), 0, 1), 
@@ -137,16 +139,24 @@ rose_analytic_df <- rose_analytic_df |>
   deep_rass = case_when(min_rass12< -3~1, min_rass12>-4~0), #ever in coma 12 hours
   deep_rass_max = case_when(max_rass12< -3~1, max_rass12>-4~0), #always in coma 12 hours
   min_ph = round(min_ph, digits=2),
+  ph_715_noimpute = case_when(min_ph >=7.15 ~0, min_ph <7.15~1), 
   ph_715 = case_when(is.na(min_ph) | min_ph >=7.15 ~0, min_ph <7.15~1), 
-  ph_72 = case_when(is.na(min_ph) | min_ph >=7.2 ~0, min_ph <7.2~1), #for ph cutoff sensitivity analysis
-  dys_rr = case_when(as.numeric(rr_diff_max)>15~1, as.numeric(rr_diff_max) <16 ~0), 
-  dys_mv = case_when(mv_obs_max <16 ~0, mv_obs_max >= 16~1), 
-  agitated_rass = fifelse(max_rass12 >1, 1,0), #ever rass >1
+  dys_rr = case_when(as.numeric(rr_diff_max)>15~1, as.numeric(rr_diff_max) <16 | is.na(rr_diff_max)~0), 
+  dys_mv = case_when(mv_obs_max <16 | is.na(mv_obs_max) ~0, mv_obs_max >= 16~1), 
+  dys_rr_noimpute = case_when(as.numeric(rr_diff_max)>15~1, as.numeric(rr_diff_max) <16 ~0), 
+  dys_mv_noimpute = case_when(mv_obs_max <16  ~0, mv_obs_max >= 16~1), 
+  agitated_rass = case_when(max_rass12 >1~ 1,max_rass12<2 | is.na(max_rass12)~0), #ever rass >1
+  agitated_rass_noimpute = fifelse(max_rass12 >1, 1,0), #ever rass >1
   hypoxemia = fifelse(pfround <100, 1, 0), 
   code_status_presume = fifelse(!is.na(code_status_category), code_status_category, "Full"), 
 risk_factors_meet_criteria_no_prone=case_when(ph_715==1 & hypoxemia==1  ~"Hypoxemia, Low pH", ph_715==0 & hypoxemia==1 ~"Hypoxemia", ph_715==1 &   hypoxemia==0  ~"Low pH",  ph_715==0 &  hypoxemia==0~"None"), 
 risk_factors_meet_criteria=case_when(ph_715==1 & hypoxemia==1 & early_prone==1 ~"Hypoxemia, Low pH, proned", ph_715==0 & hypoxemia==1 & early_prone==1~"Hypoxemia, proned", ph_715==1 &   hypoxemia==0 & early_prone==1 ~"Low pH, proned",  ph_715==0 &  hypoxemia==0& early_prone==1~"Proned", ph_715==1 & hypoxemia==1 & early_prone==0 ~"Hypoxemia, Low pH", ph_715==0 & hypoxemia==1 & early_prone==0~"Hypoxemia", ph_715==1 &   hypoxemia==0 & early_prone==0 ~"Low pH",  ph_715==0 &  hypoxemia==0& early_prone==0~"None"), 
-  risk_factors_meet_criteria2=case_when(ph_715==1 & hypoxemia==1 & dys_rr==1 ~"Hypoxemia, Low pH, Inc RR", ph_715==0 & hypoxemia==1 & dys_rr==1~"Hypoxemia, Inc RR", ph_715==1 &   hypoxemia==0 & dys_rr==1 ~"Low pH, Inc RR",  ph_715==0 &  hypoxemia==0 & dys_rr==1~"Inc RR", ph_715==1 & hypoxemia==1 & dys_rr==0 ~"Hypoxemia, Low pH", ph_715==0 & hypoxemia==1 & dys_rr==0 ~"Hypoxemia", ph_715==1 &   hypoxemia==0 & dys_rr==0 ~"Low pH",  ph_715==0 &  hypoxemia==0 & dys_rr==0~"None"), 
+  risk_factors_meet_criteria2=case_when(dys_mv==0 & ph_715==1 & hypoxemia==1 & dys_rr==1 & early_prone==0~"Hypoxemia, Low pH, Inc RR", dys_mv==0 & ph_715==0 & hypoxemia==1 & dys_rr==1& early_prone==0~"Hypoxemia, Inc RR", dys_mv==0 & ph_715==1 &   hypoxemia==0 & dys_rr==1 & early_prone==0~"Low pH, Inc RR",  dys_mv==0 & ph_715==0 &  hypoxemia==0 & dys_rr==1& early_prone==0~"Inc RR", dys_mv==0 & ph_715==1 & hypoxemia==1 & dys_rr==0 & early_prone==0~"Hypoxemia, Low pH", dys_mv==0 & ph_715==0 & hypoxemia==1 & dys_rr==0 & early_prone==0~"Hypoxemia", dys_mv==0 & ph_715==1 &   hypoxemia==0 & dys_rr==0 & early_prone==0~"Low pH",  dys_mv==0 & ph_715==0 &  hypoxemia==0 & dys_rr==0& early_prone==0~"None", 
+dys_mv==1 & ph_715==1 & hypoxemia==1 & dys_rr==1 & early_prone==0~"Hypoxemia, Low pH, Inc RR, Inc MV", dys_mv==1 & ph_715==0 & hypoxemia==1 & dys_rr==1& early_prone==0~"Hypoxemia, Inc RR, Inc MV", dys_mv==1 & ph_715==1 &   hypoxemia==0 & dys_rr==1 & early_prone==0~"Low pH, Inc RR, Inc MV",  dys_mv==1 & ph_715==0 &  hypoxemia==0 & dys_rr==1& early_prone==0~"Inc RR, Inc MV", dys_mv==1 & ph_715==1 & hypoxemia==1 & dys_rr==0 & early_prone==0~"Hypoxemia, Low pH, Inc MV", dys_mv==1 & ph_715==0 & hypoxemia==1 & dys_rr==0 & early_prone==0~"Hypoxemia, Inc MV", dys_mv==1 & ph_715==1 &   hypoxemia==0 & dys_rr==0 & early_prone==0~"Low pH, Inc MV",  dys_mv==1 & ph_715==0 &  hypoxemia==0 & dys_rr==0& early_prone==0~"Inc MV", 
+
+dys_mv==0 & ph_715==1 & hypoxemia==1 & dys_rr==1 & early_prone==1~"Hypoxemia, Low pH, Inc RR, Prone", dys_mv==0 & ph_715==0 & hypoxemia==1 & dys_rr==1& early_prone==1~"Hypoxemia, Inc RR, Prone", dys_mv==0 & ph_715==1 &   hypoxemia==0 & dys_rr==1 & early_prone==1~"Low pH, Inc RR, Prone",  dys_mv==0 & ph_715==0 &  hypoxemia==0 & dys_rr==1& early_prone==1~"Inc RR, Prone", dys_mv==0 & ph_715==1 & hypoxemia==1 & dys_rr==0 & early_prone==1~"Hypoxemia, Low pH, Prone", dys_mv==0 & ph_715==0 & hypoxemia==1 & dys_rr==0 & early_prone==1~"Hypoxemia, Prone", dys_mv==0 & ph_715==1 &   hypoxemia==0 & dys_rr==0 & early_prone==1~"Low pH, Prone",  dys_mv==0 & ph_715==0 &  hypoxemia==0 & dys_rr==0& early_prone==1~"Prone", 
+dys_mv==1 & ph_715==1 & hypoxemia==1 & dys_rr==1& early_prone==1 ~"Hypoxemia, Low pH, Inc RR, Inc MV, Prone", dys_mv==1 & ph_715==0 & hypoxemia==1 & dys_rr==1& early_prone==1~"Hypoxemia, Inc RR, Inc MV, Prone", dys_mv==1 & ph_715==1 &   hypoxemia==0 & dys_rr==1 & early_prone==1~"Low pH, Inc RR, Inc MV, Prone",  dys_mv==1 & ph_715==0 &  hypoxemia==0 & dys_rr==1& early_prone==1~"Inc RR, Inc MV, Prone", dys_mv==1 & ph_715==1 & hypoxemia==1 & dys_rr==0& early_prone==1 ~"Hypoxemia, Low pH, Inc MV, Prone", dys_mv==1 & ph_715==0 & hypoxemia==1 & dys_rr==0& early_prone==1 ~"Hypoxemia, Inc MV, Prone", dys_mv==1 & ph_715==1 &   hypoxemia==0 & dys_rr==0 & early_prone==1~"Low pH, Inc MV, Prone",  dys_mv==1 & ph_715==0 &  hypoxemia==0 & dys_rr==0& early_prone==1~"Inc MV, Prone" ), 
+
 prone_48_cat = case_when(prone_48==1~"proned", prone_48==0~"unproned"),
 paralytics_48_cat = case_when(any_paralytic_48==1~"paralyzed", any_paralytic_48==0~"not_paralyzed")
   ) |>
@@ -179,15 +189,20 @@ rose_analytic_df <- rose_analytic_df |>
   deep_rass_paralytic = case_when(min_rass12_paralytic< -3~1, min_rass12_paralytic>-4~0),
   deep_rass_max_paralytic = case_when(max_rass12_paralytic< -3~1, max_rass12_paralytic>-4~0),
   min_ph_paralytic = round(min_ph_paralytic, digits=2),
-  ph_715_paralytic = case_when(is.na(min_ph_paralytic) | min_ph_paralytic >=7.15 ~0, min_ph_paralytic <7.15~1), 
-  ph_72_paralytic = case_when(is.na(min_ph_paralytic) | min_ph_paralytic >=7.2 ~0, min_ph_paralytic <7.2~1), 
-  dys_rr_paralytic = case_when(rr_diff_max_paralytic>15 ~1, rr_diff_max_paralytic <16 ~0), 
-  dys_mv_paralytic = case_when(mv_obs_max_paralytic <16 ~0, mv_obs_max_paralytic >= 16~1), 
-  agitated_rass_paralytic = fifelse(max_rass12_paralytic >1, 1,0), 
+  agitated_rass_paralytic = case_when(max_rass12_paralytic >1~ 1,max_rass12_paralytic<2 | (is.na(max_rass12_paralytic) & any_paralytic_48==1) ~0), 
+  agitated_rass_paralytic_noimpute = fifelse(max_rass12_paralytic >1, 1,0), 
+  ph_715_noimpute_paralytic = case_when(min_ph_paralytic >=7.15 ~0, min_ph_paralytic <7.15~1), 
+  ph_715_paralytic = case_when((is.na(min_ph_paralytic) & any_paralytic_48==1) | min_ph_paralytic >=7.15 ~0, min_ph_paralytic <7.15~1), 
+  dys_rr_paralytic = case_when(as.numeric(rr_diff_max_paralytic)>15~1, as.numeric(rr_diff_max_paralytic) <16 | (is.na(rr_diff_max_paralytic) & any_paralytic_48==1)~0), 
+  dys_mv_paralytic = case_when(mv_obs_max_paralytic <16 | (is.na(mv_obs_max_paralytic)& any_paralytic_48==1) ~0, mv_obs_max_paralytic >= 16~1), 
+  dys_rr_noimpute_paralytic = case_when(as.numeric(rr_diff_max_paralytic)>15~1, as.numeric(rr_diff_max_paralytic) <16 ~0), 
+  dys_mv_noimpute_paralytic = case_when(mv_obs_max_paralytic <16  ~0, mv_obs_max_paralytic >= 16~1), 
   hypoxemia_paralytic = fifelse(pfround_paralytic <100, 1, 0), 
   risk_factors_paralytic=case_when(joint_prone_para6==1 & hypoxemia_paralytic==1 & ph_715_paralytic==0 ~"Hypoxemia, Prone", joint_prone_para6==0 & hypoxemia_paralytic==1  & ph_715_paralytic==0~"Hypoxemia", joint_prone_para6==1 &   hypoxemia_paralytic==0 & ph_715_paralytic==0~"Prone",  joint_prone_para6==0 &  hypoxemia_paralytic==0 &  ph_715_paralytic==0~"None", joint_prone_para6==1 & hypoxemia_paralytic==1 & ph_715_paralytic==1 ~"Hypoxemia, Prone, Low pH", joint_prone_para6==0 & hypoxemia_paralytic==1 & ph_715_paralytic==1~"Hypoxemia, Low pH", joint_prone_para6==1 &   hypoxemia_paralytic==0 &   ph_715_paralytic==1~"Prone, Low pH",  joint_prone_para6==0 &  hypoxemia_paralytic==0  & ph_715_paralytic==1~"Low pH"),
   
-  risk_factors_paralytic2=case_when(joint_prone_para6==1 & hypoxemia_paralytic==1 & ph_715_paralytic==0 & dys_rr_paralytic==1 ~"Hypoxemia, Prone, Inc RR", joint_prone_para6==0 & hypoxemia_paralytic==1  & ph_715_paralytic==0 & dys_rr_paralytic==1 ~"Hypoxemia, Inc RR", joint_prone_para6==1 &   hypoxemia_paralytic==0 & ph_715_paralytic==0 & dys_rr_paralytic==1 ~"Prone, Inc RR",  joint_prone_para6==0 &  hypoxemia_paralytic==0 &  ph_715_paralytic==0 & dys_rr_paralytic==1 ~"Inc RR", joint_prone_para6==1 & hypoxemia_paralytic==1 & ph_715_paralytic==1  & dys_rr_paralytic==1 ~"Hypoxemia, Prone, Low pH, Inc RR", joint_prone_para6==0 & hypoxemia_paralytic==1 & ph_715_paralytic==1  & dys_rr_paralytic==1 ~"Hypoxemia, Low pH, Inc RR", joint_prone_para6==1 &   hypoxemia_paralytic==0 &   ph_715_paralytic==1 & dys_rr_paralytic==1 ~"Prone, Low pH, Inc RR",  joint_prone_para6==0 &  hypoxemia_paralytic==0  & ph_715_paralytic==1 & dys_rr_paralytic==1 ~"Low pH, Inc RR", joint_prone_para6==1 & hypoxemia_paralytic==1 & ph_715_paralytic==0  & dys_rr_paralytic==0 ~"Hypoxemia, Prone", joint_prone_para6==0 & hypoxemia_paralytic==1  & ph_715_paralytic==0  & dys_rr_paralytic==0 ~"Hypoxemia", joint_prone_para6==1 &   hypoxemia_paralytic==0 & ph_715_paralytic==0  & dys_rr_paralytic==0 ~"Prone",  joint_prone_para6==0 &  hypoxemia_paralytic==0 &  ph_715_paralytic==0  & dys_rr_paralytic==0 ~"None", joint_prone_para6==1 & hypoxemia_paralytic==1 & ph_715_paralytic==1  & dys_rr_paralytic==0  ~"Hypoxemia, Prone, Low pH", joint_prone_para6==0 & hypoxemia_paralytic==1 & ph_715_paralytic==1  & dys_rr_paralytic==0 ~"Hypoxemia, Low pH", joint_prone_para6==1 &   hypoxemia_paralytic==0 &   ph_715_paralytic==1  & dys_rr_paralytic==0 ~"Prone, Low pH",  joint_prone_para6==0 &  hypoxemia_paralytic==0  & ph_715_paralytic==1  & dys_rr_paralytic==0 ~"Low pH")
+  risk_factors_paralytic2=case_when(joint_prone_para6==1 & hypoxemia_paralytic==1 & ph_715_paralytic==0 & dys_rr_paralytic==1 & dys_mv_paralytic==0~"Hypoxemia, Prone, Inc RR", joint_prone_para6==0 & hypoxemia_paralytic==1  & ph_715_paralytic==0 & dys_rr_paralytic==1 & dys_mv_paralytic==0~"Hypoxemia, Inc RR", joint_prone_para6==1 &   hypoxemia_paralytic==0 & ph_715_paralytic==0 & dys_rr_paralytic==1 & dys_mv_paralytic==0~"Prone, Inc RR",  joint_prone_para6==0 &  hypoxemia_paralytic==0 &  ph_715_paralytic==0 & dys_rr_paralytic==1& dys_mv_paralytic==0 ~"Inc RR", joint_prone_para6==1 & hypoxemia_paralytic==1 & ph_715_paralytic==1  & dys_rr_paralytic==1& dys_mv_paralytic==0 ~"Hypoxemia, Prone, Low pH, Inc RR", joint_prone_para6==0 & hypoxemia_paralytic==1 & ph_715_paralytic==1  & dys_rr_paralytic==1& dys_mv_paralytic==0~"Hypoxemia, Low pH, Inc RR", joint_prone_para6==1 &   hypoxemia_paralytic==0 &   ph_715_paralytic==1 & dys_rr_paralytic==1& dys_mv_paralytic==0 ~"Prone, Low pH, Inc RR",  joint_prone_para6==0 &  hypoxemia_paralytic==0  & ph_715_paralytic==1 & dys_rr_paralytic==1& dys_mv_paralytic==0 ~"Low pH, Inc RR", joint_prone_para6==1 & hypoxemia_paralytic==1 & ph_715_paralytic==0  & dys_rr_paralytic==0 & dys_mv_paralytic==0~"Hypoxemia, Prone", joint_prone_para6==0 & hypoxemia_paralytic==1  & ph_715_paralytic==0  & dys_rr_paralytic==0 & dys_mv_paralytic==0~"Hypoxemia", joint_prone_para6==1 &   hypoxemia_paralytic==0 & ph_715_paralytic==0  & dys_rr_paralytic==0 & dys_mv_paralytic==0~"Prone",  joint_prone_para6==0 &  hypoxemia_paralytic==0 &  ph_715_paralytic==0  & dys_rr_paralytic==0& dys_mv_paralytic==0 ~"None", joint_prone_para6==1 & hypoxemia_paralytic==1 & ph_715_paralytic==1  & dys_rr_paralytic==0 & dys_mv_paralytic==0 ~"Hypoxemia, Prone, Low pH", joint_prone_para6==0 & hypoxemia_paralytic==1 & ph_715_paralytic==1  & dys_rr_paralytic==0 & dys_mv_paralytic==0~"Hypoxemia, Low pH", joint_prone_para6==1 &   hypoxemia_paralytic==0 &   ph_715_paralytic==1  & dys_rr_paralytic==0 & dys_mv_paralytic==0~"Prone, Low pH",  joint_prone_para6==0 &  hypoxemia_paralytic==0  & ph_715_paralytic==1  & dys_rr_paralytic==0 & dys_mv_paralytic==0~"Low pH",
+                                    
+  joint_prone_para6==1 & hypoxemia_paralytic==1 & ph_715_paralytic==0 & dys_rr_paralytic==1 & dys_mv_paralytic==1~"Hypoxemia, Prone, Inc RR, Inc MV", joint_prone_para6==0 & hypoxemia_paralytic==1  & ph_715_paralytic==0 & dys_rr_paralytic==1& dys_mv_paralytic==1 ~"Hypoxemia, Inc RR, Inc MV", joint_prone_para6==1 &   hypoxemia_paralytic==0 & ph_715_paralytic==0 & dys_rr_paralytic==1 & dys_mv_paralytic==1~"Prone, Inc RR, Inc MV",  joint_prone_para6==0 &  hypoxemia_paralytic==0 &  ph_715_paralytic==0 & dys_rr_paralytic==1& dys_mv_paralytic==1~"Inc RR, Inc MV", joint_prone_para6==1 & hypoxemia_paralytic==1 & ph_715_paralytic==1  & dys_rr_paralytic==1 & dys_mv_paralytic==1~"Hypoxemia, Prone, Low pH, Inc RR, Inc MV", joint_prone_para6==0 & hypoxemia_paralytic==1 & ph_715_paralytic==1  & dys_rr_paralytic==1 & dys_mv_paralytic==1~"Hypoxemia, Low pH, Inc RR, Inc MV", joint_prone_para6==1 &   hypoxemia_paralytic==0 &   ph_715_paralytic==1 & dys_rr_paralytic==1 & dys_mv_paralytic==1~"Prone, Low pH, Inc RR, Inc MV",  joint_prone_para6==0 &  hypoxemia_paralytic==0  & ph_715_paralytic==1 & dys_rr_paralytic==1& dys_mv_paralytic==1 ~"Low pH, Inc RR, Inc MV", joint_prone_para6==1 & hypoxemia_paralytic==1 & ph_715_paralytic==0  & dys_rr_paralytic==0& dys_mv_paralytic==1 ~"Hypoxemia, Prone, Inc MV", joint_prone_para6==0 & hypoxemia_paralytic==1  & ph_715_paralytic==0  & dys_rr_paralytic==0 & dys_mv_paralytic==1~"Hypoxemia, Inc MV", joint_prone_para6==1 &   hypoxemia_paralytic==0 & ph_715_paralytic==0  & dys_rr_paralytic==0 & dys_mv_paralytic==1~"Prone, Inc MV",  joint_prone_para6==0 &  hypoxemia_paralytic==0 &  ph_715_paralytic==0  & dys_rr_paralytic==0 & dys_mv_paralytic==1~"Inc MV", joint_prone_para6==1 & hypoxemia_paralytic==1 & ph_715_paralytic==1  & dys_rr_paralytic==0 & dys_mv_paralytic==1 ~"Hypoxemia, Prone, Low pH, Inc MV", joint_prone_para6==0 & hypoxemia_paralytic==1 & ph_715_paralytic==1  & dys_rr_paralytic==0& dys_mv_paralytic==1~"Hypoxemia, Low pH, Inc MV", joint_prone_para6==1 &   hypoxemia_paralytic==0 &   ph_715_paralytic==1  & dys_rr_paralytic==0 & dys_mv_paralytic==1~"Prone, Low pH, Inc MV",  joint_prone_para6==0 &  hypoxemia_paralytic==0  & ph_715_paralytic==1  & dys_rr_paralytic==0 & dys_mv_paralytic==1~"Low pH, Inc MV" )
   )   |>
   collect()
 
@@ -213,23 +228,11 @@ rose <- rose |>
 # Assign periods
 rose$period <- ifelse(rose$year %in% 2018:2021, "2018-2021", "2022-2025")
 write.csv(rose, file=paste0(project_location, '/project_output_UPLOAD/', site, '_ahrf_cohort_table.csv'))
+```
 
-# inclusions <- rose_analytic_df |>
-#   filter(is.na(early_prone) | early_prone==0)
-# 
-# next_exclusion <- data.frame(
-#   excluded_encounters = nrow(rose_analytic_df) - nrow(inclusions),
-#     involved_patients = length(unique(rose_analytic_df$patient_id)) - length(unique(inclusions$patient_id)),
-#   reason = "early prone"
-# )
-
+```{r consort}
 consort <- read.csv(paste0(project_location, '/project_output_UPLOAD/', site,'_consort.csv'))
 consort <- consort[1:9, ]
-#consort <- bind_rows(consort, next_exclusion)
-
-#For patient_ids with more than one encounter block, select one at random
-#rose_analytic_df <- rose_analytic_df |>
-#  filter(is.na(early_prone) | early_prone==0) #remove those early proned before meeting criteria - > different etiology likely. 
 
 inclusions <- rose_analytic_df |>
   filter(year(t_rose_first)<2026)
@@ -245,6 +248,12 @@ consort <- bind_rows(consort, next_exclusion)
 #Filter Out Those with t_enrollment in 2026
 rose_analytic_df <- rose_analytic_df |>
   filter(year(t_rose_first)<2026)
+
+non_unique_encounters <- data.frame(
+  excluded_encounters = nrow(rose_analytic_df) - nrow(count(rose_analytic_df, rose_analytic_df$encounter_block)),
+  reason = "multiple rows 1 hospitalization_id -> needs to come off duplicate list"
+)
+consort <- bind_rows(consort, non_unique_encounters)
 
 duplicates <- nrow(rose_analytic_df)
 
@@ -756,10 +765,13 @@ to_tab <- c(
   'p_and_p',
   'prone_all',
   'early_prone',
-  'ph_72',
   'dys_rr',
   'dys_mv',
   'ph_715', 
+  'ph_715_noimpute', 
+  'dys_rr_noimpute',
+  'dys_mv_noimpute',
+  'agitated_rass_noimpute',
   'risk_factors_meet_criteria',
   'risk_factors_meet_criteria2',
 
@@ -770,10 +782,13 @@ to_tab <- c(
   'deep_rass_max_paralytic',
   'ph_715_paralytic', 
   'min_ph_paralytic',
-  'ph_72_paralytic', 
   'dys_rr_paralytic', 
   'dys_mv_paralytic', 
   'agitated_rass_paralytic', 
+  'ph_715_noimpute_paralytic', 
+  'dys_rr_noimpute_paralytic',
+  'dys_mv_noimpute_paralytic',
+  'agitated_rass_noimpute_paralytic',
   'hypoxemia_paralytic', 
   'risk_factors_paralytic',
   'risk_factors_paralytic2',
@@ -798,7 +813,6 @@ factors_tab <- c(
   'criteria',
   'deep_rass',
   'deep_rass_max',
-  'ph_72',
   'agitated_rass',
   'enrollment_location_type',
   'code_status_presume',
@@ -809,6 +823,10 @@ factors_tab <- c(
   'dys_rr',
   'dys_mv',
   'ph_715', 
+  'ph_715_noimpute', 
+  'dys_rr_noimpute',
+  'dys_mv_noimpute',
+  'agitated_rass_noimpute',
   'initial_paralytic_type', 
   'deep_rass_paralytic',
   'deep_rass_max_paralytic',
@@ -817,6 +835,10 @@ factors_tab <- c(
   'dys_rr_paralytic', 
   'dys_mv_paralytic', 
   'agitated_rass_paralytic', 
+  'ph_715_noimpute_paralytic', 
+  'dys_rr_noimpute_paralytic',
+  'dys_mv_noimpute_paralytic',
+  'agitated_rass_noimpute_paralytic',
   'hypoxemia_paralytic', 
   'risk_factors_meet_criteria',
   'risk_factors_meet_criteria2',
@@ -896,6 +918,7 @@ write.csv(tab1_excel, file=paste0(project_location, '/project_output_UPLOAD/', s
 rm(tab1_excel)
 
 #Now Table 1 stratified by study period
+if (length(unique(na.omit(rose_analytic_df$study_period))) >= 2) {
 tab1 <- CreateTableOne(vars = to_tab, strata="study_period", data=rose_analytic_df, factorVars = factors_tab, addOverall = TRUE) 
 tab1_excel <- as.data.frame(print(tab1, printToggle = FALSE, missing = TRUE)) |>
   mutate(site = site) |>
@@ -910,6 +933,10 @@ tab1_excel <- as.data.frame(print(tab1, printToggle = FALSE, missing = TRUE)) |>
     }))
 write.csv(tab1_excel, file=paste0(project_location, '/project_output_UPLOAD/', site, '_Table1_by_Period.csv'))
 rm(tab1_excel)
+} else {
+  message("Skipping study_period-stratified table: only one period at this site (",
+          unique(na.omit(rose_analytic_df$study_period)), ")")
+}
 
 #Now Table 1 stratified by enrollment location
 tab1 <- CreateTableOne(vars = to_tab, strata="enrollment_location_type", data=rose_analytic_df, factorVars = factors_tab, addOverall = TRUE) 
@@ -1035,6 +1062,18 @@ mv <- rose_analytic_df %>%
   filter(prone_48 == 0) %>%
   count(hospital_id, dys_mv, paralytics_48_cat) %>%
   arrange(hospital_id, dys_mv, paralytics_48_cat)
+ph_noimpute <- rose_analytic_df %>%
+  filter(prone_48 == 0) %>%
+  count(hospital_id, ph_715_noimpute, paralytics_48_cat) %>%
+  arrange(hospital_id, ph_715_noimpute, paralytics_48_cat)
+rr_noimpute <- rose_analytic_df %>%
+  filter(prone_48 == 0) %>%
+  count(hospital_id, dys_rr_noimpute, paralytics_48_cat) %>%
+  arrange(hospital_id, dys_rr_noimpute, paralytics_48_cat)
+mv_noimpute <- rose_analytic_df %>%
+  filter(prone_48 == 0) %>%
+  count(hospital_id, dys_mv_noimpute, paralytics_48_cat) %>%
+  arrange(hospital_id, dys_mv_noimpute, paralytics_48_cat)
 or_prone <- rose_analytic_df %>%
   filter(or_before_enrollment == 0) %>%
   count(hospital_id, prone_48_cat, paralytics_48_cat) %>%
@@ -1096,7 +1135,13 @@ if(n_periods==3){
     data.frame(site = c("rr")),
     rr,
     data.frame(site = c("mv")),
-    mv
+    mv, 
+    data.frame(site = c("ph_noimpute")),
+    ph_noimpute,
+    data.frame(site = c("rr_noimpute")),
+    rr_noimpute,
+    data.frame(site = c("mv_noimpute")),
+    mv_noimpute
 )
 } else{
   main_table <- bind_rows(
@@ -1117,7 +1162,13 @@ if(n_periods==3){
     data.frame(site = c("rr")),
     rr,
     data.frame(site = c("mv")),
-    mv
+    mv,
+    data.frame(site = c("ph_noimpute")),
+    ph_noimpute,
+    data.frame(site = c("rr_noimpute")),
+    rr_noimpute,
+    data.frame(site = c("mv_noimpute")),
+    mv_noimpute
     )
 }
 # Write the table to a CSV file
@@ -1167,6 +1218,32 @@ alluvial
 ggsave(paste0(site, '_alluvial.pdf'),
        path = paste0(project_location, '/project_output_UPLOAD/'))
 
+
+alluvial_data_long2 <- alluvial_data_long2 |>
+  filter(n>10)
+
+alluvial <- ggplot(alluvial_data_long2, aes(x, id = id, split = y, value = n)) +
+  geom_parallel_sets(aes(fill = risk_factors_meet_criteria2), alpha = 0.7) +
+  geom_parallel_sets_axes(axis.width = 0.15, fill = "grey80") +
+  geom_parallel_sets_labels(colour = "black", size = 3, angle = 0,
+                            hjust = 0.5 ) +
+  scale_fill_brewer(palette = "Set2") +
+  labs(
+    title = "Flow from Risk Factor Criteria to Paralytic Agent",
+    y = "Number of Patients",
+    fill = "Risk Factor Criteria"
+  ) +
+  theme_minimal() +
+  theme(
+    legend.position = "bottom",
+    plot.title = element_text(hjust = 0.5, face = "bold"),
+    axis.text.y = element_blank()
+  )
+
+alluvial
+ggsave(paste0(site, '_alluvial2.pdf'),
+       path = paste0(project_location, '/project_output_UPLOAD/'))
+
 ```
 
 ```{r Paralytics and Patient Outcomes in Table Form}
@@ -1193,6 +1270,7 @@ to_tab <- c(
   'prone_48',
   'early_prone',
   'min_ph',
+  'min_ph_paralytic',
   'para_to_prone_numeric',
    # 'total_continuous_para_hours_prior',
   'total_continuous_para_hours_post',
@@ -1230,7 +1308,7 @@ rose_analytic_df <- rose_analytic_df |>
 # Get all continuous variables (those not in factors_tab)
 continuous_vars <- setdiff(to_tab, factors_tab)
 
-permitted <- c("n", "any_paralytic_12 = 1 (%)", "any_paralytic_24 = 1 (%)", "any_paralytic_48 = 1 (%)", "any_paralytic_72 = 1 (%)", "any_paralytic_ever = 1 (%)", "in_hosp_death = 1 (%)",  "death_or_hospice = 1 (%)"  , "criteria_to_paralytic (mean (SD))", "ett_to_paralytic (mean (SD))" , "first_rose_pf_all (mean (SD))" , "pfround_paralytic (mean (SD))",  "prone_48 = 1 (%)"  , "early_prone = 1 (%)"  , "min_ph (mean (SD))" , "para_to_prone_numeric (mean (SD))" , "total_continuous_para_hours_post (mean (SD))" , "total_continuous_para_hours_all (mean (SD))" ,  "total_continuous_para_hours_48h (mean (SD))" , "study_period2 (%)" , "   Post-ROSE/COVID" , "   Post-ROSE/Post-COVID" , "   Pre-ROSE/Pre-COVID" ,    "any_paralytic_482 = 1 (%)" , "continous_paralytic_given (%)"  , "   atracurium"  , "   cisatracurium"  , "   rocuronium"    ,  "   vecuronium"   , "initial_paralytic_type = intermittent (%)",  "criteria_to_paralytic (median [IQR])", "ett_to_paralytic (median [IQR])", "first_rose_pf_all (median [IQR])", "pfround_paralytic (median [IQR])" , "min_ph (median [IQR])", "para_to_prone_numeric (median [IQR])" , "total_continuous_para_hours_post (median [IQR])", "total_continuous_para_hours_all (median [IQR])" , "total_continuous_para_hours_48h (median [IQR])")
+permitted <- c("n", "any_paralytic_12 = 1 (%)", "any_paralytic_24 = 1 (%)", "any_paralytic_48 = 1 (%)", "any_paralytic_72 = 1 (%)", "any_paralytic_ever = 1 (%)", "in_hosp_death = 1 (%)",  "death_or_hospice = 1 (%)"  , "criteria_to_paralytic (mean (SD))", "ett_to_paralytic (mean (SD))" , "first_rose_pf_all (mean (SD))" , "pfround_paralytic (mean (SD))",  "prone_48 = 1 (%)"  , "early_prone = 1 (%)"  , "min_ph (mean (SD))" , "min_ph_paralytic (mean (SD))" , "para_to_prone_numeric (mean (SD))" , "total_continuous_para_hours_post (mean (SD))" , "total_continuous_para_hours_all (mean (SD))" ,  "total_continuous_para_hours_48h (mean (SD))" , "study_period2 (%)" , "   Post-ROSE/COVID" , "   Post-ROSE/Post-COVID" , "   Pre-ROSE/Pre-COVID" ,    "any_paralytic_482 = 1 (%)" , "continous_paralytic_given (%)"  , "   atracurium"  , "   cisatracurium"  , "   rocuronium"    ,  "   vecuronium"   , "initial_paralytic_type = intermittent (%)",  "criteria_to_paralytic (median [IQR])", "ett_to_paralytic (median [IQR])", "first_rose_pf_all (median [IQR])", "pfround_paralytic (median [IQR])" , "min_ph (median [IQR])", "min_ph_paralytic (median [IQR])", "para_to_prone_numeric (median [IQR])" , "total_continuous_para_hours_post (median [IQR])", "total_continuous_para_hours_all (median [IQR])" , "total_continuous_para_hours_48h (median [IQR])")
 permitted<- c(permitted, hospital_names)
 
 # Create Table 2, stratified by study period (or unstratified if only one period)
@@ -1299,7 +1377,7 @@ tab2_excel <- as.data.frame(print(tab2, printToggle = FALSE, missing = TRUE)) |>
 write.csv(tab2_excel, file=paste0(project_location, '/project_output_UPLOAD/', site, '_Table_paralytics_Outcomes_by_Hospital.csv'))
 
 
-permitted_gt <- c("any_paralytic_12", "0", "1", "any_paralytic_24", "any_paralytic_72", "any_paralytic_ever", "in_hosp_death", "Unknown", "death_or_hospice"  , "criteria_to_paralytic", "ett_to_paralytic" , "first_rose_pf_all" , "pfround_paralytic",  "prone_48"  , "early_prone"  , "min_ph" , "para_to_prone_numeric" , "total_continuous_para_hours_post" , "total_continuous_para_hours_all" ,  "total_continuous_para_hours_48h" , "study_period2" , "Post-ROSE/COVID" , "Post-ROSE/Post-COVID" , "Pre-ROSE/Pre-COVID" ,    "any_paralytic_482" , "continous_paralytic_given"  , "atracurium"  , "cisatracurium"  , "rocuronium"    ,  "vecuronium"   , "initial_paralytic_type",  "criteria_to_paralytic", "ett_to_paralytic", "first_rose_pf_all", "pfround_paralytic" , "min_ph", "para_to_prone_numeric" , "total_continuous_para_hours_post", "total_continuous_para_hours_all" , "total_continuous_para_hours_48h", "initial_paralytic_type", "continuous", "intermittent", "hospital_id2")
+permitted_gt <- c("any_paralytic_12", "0", "1", "any_paralytic_24", "any_paralytic_72", "any_paralytic_ever", "in_hosp_death", "Unknown", "death_or_hospice"  , "criteria_to_paralytic", "ett_to_paralytic" , "first_rose_pf_all" , "pfround_paralytic",  "prone_48"  , "early_prone"  , "min_ph" , "para_to_prone_numeric" , "total_continuous_para_hours_post" , "total_continuous_para_hours_all" ,  "total_continuous_para_hours_48h" , "study_period2" , "Post-ROSE/COVID" , "Post-ROSE/Post-COVID" , "Pre-ROSE/Pre-COVID" ,    "any_paralytic_482" , "continous_paralytic_given"  , "atracurium"  , "cisatracurium"  , "rocuronium"    ,  "vecuronium"   , "initial_paralytic_type",  "criteria_to_paralytic", "ett_to_paralytic", "first_rose_pf_all", "pfround_paralytic" , "min_ph", "min_ph_paralytic", "para_to_prone_numeric" , "total_continuous_para_hours_post", "total_continuous_para_hours_all" , "total_continuous_para_hours_48h", "initial_paralytic_type", "continuous", "intermittent", "hospital_id2")
 permitted_gt<- c(permitted_gt, hospital_names)
 
 
@@ -1544,7 +1622,9 @@ rose_analytic_df$or_before_enrollment <- factor(rose_analytic_df$or_before_enrol
 rose_analytic_df$ph_715 <- factor(rose_analytic_df$ph_715)
 
 rose_analytic_df$study_period <- factor(rose_analytic_df$study_period)
-rose_analytic_df$study_period <- relevel(rose_analytic_df$study_period, ref = "Pre-ROSE/Pre-COVID")
+if ("Pre-ROSE/Pre-COVID" %in% levels(rose_analytic_df$study_period)) {
+  rose_analytic_df$study_period <- relevel(rose_analytic_df$study_period, ref = "Pre-ROSE/Pre-COVID")
+}
 
 ```
 
@@ -1560,6 +1640,14 @@ proned_cohort<- rose_analytic_df %>% filter(prone_48==1)
 pf_plot<- unproned_cohort %>% group_by(pfround) %>% summarise(total = n(), yes_count=sum(any_paralytic_48), no_count=total-yes_count, percent_yes=100 * yes_count/total)
 ggplot(pf_plot, aes(x= pfround, y = percent_yes)) + geom_point() + theme_classic()
 write.csv(pf_plot, paste0(project_location, '/project_output_UPLOAD/', site, '_pf_plot_unproned.csv'))
+
+pf_plot<- proned_cohort %>% group_by(pfround) %>% summarise(total = n(), yes_count=sum(any_paralytic_48), no_count=total-yes_count, percent_yes=100 * yes_count/total)
+ggplot(pf_plot, aes(x= pfround, y = percent_yes)) + geom_point() + theme_classic()
+write.csv(pf_plot, paste0(project_location, '/project_output_UPLOAD/', site, '_pf_plot_proned.csv'))
+
+pf_plot<- rose_analytic_df %>% group_by(pfround) %>% summarise(total = n(), yes_count=sum(any_paralytic_48), no_count=total-yes_count, percent_yes=100 * yes_count/total)
+ggplot(pf_plot, aes(x= pfround, y = percent_yes)) + geom_point() + theme_classic()
+write.csv(pf_plot, paste0(project_location, '/project_output_UPLOAD/', site, '_pf_plot_all.csv'))
 
 #group by MV_obs and count up how many on paralytics
 mv_plot<- unproned_cohort %>% group_by(mv_obsround) %>% summarise(total = n(), yes_count=sum(any_paralytic_48), no_count=total-yes_count, percent_yes=100 * yes_count/total)
@@ -1892,15 +1980,15 @@ if(n_periods==3){
     data.frame(site = c("Rass deep sedation/Min")),
     rass_min_summary_proned)
 } else{
-  main_table <- bind_rows(
-     data.frame(site = c("Prone")),
+    main_table <- bind_rows(
+    data.frame(site = c("Prone")),
     prone_summary,
-    data.frame(site = c("Study period")),
-    period_summary,
-    data.frame(site = c("Prone*Study period")),
-    prone_period_summary_int,
-    data.frame(site = c("Prone, Study period")),
-    prone_period_summary,
+    if (exists("period_summary")) data.frame(site = c("Study period")),
+    if (exists("period_summary")) period_summary,
+    if (exists("prone_period_summary_int")) data.frame(site = c("Prone*Study period")),
+    if (exists("prone_period_summary_int")) prone_period_summary_int,
+    if (exists("prone_period_summary")) data.frame(site = c("Prone, Study period")),
+    if (exists("prone_period_summary")) prone_period_summary,
     data.frame(site = c("Hypoxemia")),
     hypoxemia_summary,
     data.frame(site = c("Hypoxemia_unproned")),
@@ -3789,7 +3877,7 @@ df_agg_para_prone_status <- df |>
 write.csv(df_agg_para_prone_status, paste0(project_location, '/project_output_UPLOAD/', site, '_aggregate_expected_paralytics_wprone_Status.csv'))
 
 #This Aggregate Data Will be Used for Risk and Reliability Adjusted Paralytic Rate Estimates by Hospital, proning
-#Generate Paralytics Propensity Score (Don't Account for Hospital, period, or proning status Here)
+#Generate Paralytics Propensity Score (Don't Account for Hospital or proning status Here)
 alt_form <- any_paralytic_48 ~ first_rose_pf_all_scale + ph_715  
 
 alt_mod <- glm(alt_form,
@@ -3810,9 +3898,8 @@ df <- alt_mod$data
 df$paralytics_propensity <- predict(alt_mod, newdata=df %>% filter(!is.na(hospital_id)), type = 'response')
 
 #Create Aggregate Dataset with Observed and Expected Events as well as N Broken Out by Proning Status
-df_agg_para_prone_status_sp <- df |>
-  group_by(hospital_id, prone_48, study_period) |>
-  filter(!is.na(hospital_id)) |>
+df_agg_para_prone_status <- df |>
+  group_by(hospital_id, prone_48) |>
   summarise(
     n_patients = n(),
     observed_paralytics = sum(any_paralytic_48, na.rm=TRUE),
@@ -3825,7 +3912,165 @@ df_agg_para_prone_status_sp <- df |>
   mutate(not_paralytics=n_patients-observed_paralytics)
 
 #Save CSV
-write.csv(df_agg_para_prone_status_sp, paste0(project_location, '/project_output_UPLOAD/', site, '_aggregate_expected_paralytics_wprone_Status_sp.csv'))
+write.csv(df_agg_para_prone_status, paste0(project_location, '/project_output_UPLOAD/', site, '_aggregate_expected_paralytics_wprone_Status_nosp.csv'))
+
+
+
+####versions without pH included
+#This Aggregate Data Will be Used for Risk and Reliability Adjusted Paralytic Rate Estimates by Hospital
+#Generate Paralytics Propensity Score (Don't Account for Hospital Here)
+alt_form <- any_paralytic_48 ~  first_rose_pf_all_scale + prone_48 + study_period
+
+alt_mod <- glm(alt_form,
+               data = rose_analytic_df %>% filter(!is.na(hospital_id)), 
+               family=binomial)
+
+#Collect Coefficient and Covariance Matrix for Centralized Creation of Global Coefficient
+propensity_build_estimates <- model_summary_table(alt_mod)
+propensity_build_covariance <- as.data.frame(vcov(alt_mod))
+
+write.csv(propensity_build_estimates, paste0(project_location, '/project_output_UPLOAD/', site, '_propensity_build_estimates_noph.csv'))
+write.csv(propensity_build_covariance, paste0(project_location, '/project_output_UPLOAD/', site, '_propensity_build_covariance_noph.csv'))
+
+#Extract Dataset from Model
+df <- alt_mod$data
+
+#Propensity Score Taken from Prediction
+df$paralytics_propensity <- predict(alt_mod, newdata=df, type = 'response')
+
+#Each Site Aggregates Data
+#Create Aggregate Dataset with Observed and Expected Events as well as N
+df_agg <- df |>
+  group_by(hospital_id) |>
+  filter(!is.na(hospital_id)) |>
+  summarise(
+    n_patients = n(),
+    observed_paralytics = sum(any_paralytic_48, na.rm=TRUE),
+    paralytics_rate_observed = mean(any_paralytic_48, na.rm=TRUE),
+    paralytics_rate_adjust = mean(paralytics_propensity, na.rm = TRUE)
+  ) |>
+  ungroup() |>
+  mutate(expected_paralytics=round((paralytics_rate_adjust*n_patients), digits = 0)) |>
+  mutate(not_paralytics=n_patients-observed_paralytics)
+
+#Save CSV
+write.csv(df_agg, paste0(project_location, '/project_output_UPLOAD/', site, '_aggregate_expected_paralytics_noph.csv'))
+
+#This Aggregate Data Will be Used for Risk and Reliability Adjusted Paralytic Rate Estimates by Hospital, proning
+#Generate Paralytics Propensity Score (Don't Account for Hospital or proning status Here)
+alt_form <- any_paralytic_48 ~ first_rose_pf_all_scale  + study_period
+
+alt_mod <- glm(alt_form,
+               data = rose_analytic_df %>% filter(!is.na(hospital_id)), 
+               family=binomial)
+
+#Collect Coefficient and Covariance Matrix for Centralized Creation of Global Coefficient
+propensity_build_estimates <- model_summary_table(alt_mod)
+propensity_build_covariance <- as.data.frame(vcov(alt_mod))
+
+write.csv(propensity_build_estimates, paste0(project_location, '/project_output_UPLOAD/', site, '_propensity_build_estimates_no_proning_noph.csv'))
+write.csv(propensity_build_covariance, paste0(project_location, '/project_output_UPLOAD/', site, '_propensity_build_covariance_no_proning_noph.csv'))
+
+#Extract Dataset from Model
+df <- alt_mod$data
+
+#Propensity Score Taken from Prediction
+df$paralytics_propensity <- predict(alt_mod, newdata=df %>% filter(!is.na(hospital_id)), type = 'response')
+
+#Create Aggregate Dataset with Observed and Expected Events as well as N Broken Out by Proning Status
+df_agg_para_prone_status <- df |>
+  group_by(hospital_id, prone_48) |>
+  summarise(
+    n_patients = n(),
+    observed_paralytics = sum(any_paralytic_48, na.rm=TRUE),
+    paralytics_rate_observed = mean(any_paralytic_48, na.rm=TRUE),
+    paralytics_rate_adjust = mean(paralytics_propensity, na.rm = TRUE)
+  ) |>
+  ungroup() |>
+  filter(!is.na(hospital_id)) |>
+  mutate(expected_paralytics=round((paralytics_rate_adjust*n_patients), digits = 0)) |>
+  mutate(not_paralytics=n_patients-observed_paralytics)
+
+#Save CSV
+write.csv(df_agg_para_prone_status, paste0(project_location, '/project_output_UPLOAD/', site, '_aggregate_expected_paralytics_wprone_Status_noph.csv'))
+
+#This Aggregate Data Will be Used for Risk and Reliability Adjusted Paralytic Rate Estimates by Hospital, proning
+#Generate Paralytics Propensity Score whole model (Don't Account for Hospital or proning status Here)
+alt_form <- any_paralytic_48 ~ first_rose_pf_all_scale + ph_715  + study_period + dys_rr + dys_mv
+
+alt_mod <- glm(alt_form,
+               data = rose_analytic_df %>% filter(!is.na(hospital_id)), 
+               family=binomial)
+
+#Collect Coefficient and Covariance Matrix for Centralized Creation of Global Coefficient
+propensity_build_estimates <- model_summary_table(alt_mod)
+propensity_build_covariance <- as.data.frame(vcov(alt_mod))
+
+write.csv(propensity_build_estimates, paste0(project_location, '/project_output_UPLOAD/', site, '_propensity_build_estimates_no_proning_fullmodel.csv'))
+write.csv(propensity_build_covariance, paste0(project_location, '/project_output_UPLOAD/', site, '_propensity_build_covariance_no_proning_fullmodel.csv'))
+
+#Extract Dataset from Model
+df <- alt_mod$data
+
+#Propensity Score Taken from Prediction
+df$paralytics_propensity <- predict(alt_mod, newdata=df %>% filter(!is.na(hospital_id)), type = 'response')
+
+#Create Aggregate Dataset with Observed and Expected Events as well as N Broken Out by Proning Status
+df_agg_para_prone_status <- df |>
+  group_by(hospital_id, prone_48) |>
+  summarise(
+    n_patients = n(),
+    observed_paralytics = sum(any_paralytic_48, na.rm=TRUE),
+    paralytics_rate_observed = mean(any_paralytic_48, na.rm=TRUE),
+    paralytics_rate_adjust = mean(paralytics_propensity, na.rm = TRUE)
+  ) |>
+  ungroup() |>
+  filter(!is.na(hospital_id)) |>
+  mutate(expected_paralytics=round((paralytics_rate_adjust*n_patients), digits = 0)) |>
+  mutate(not_paralytics=n_patients-observed_paralytics)
+
+#Save CSV
+write.csv(df_agg_para_prone_status, paste0(project_location, '/project_output_UPLOAD/', site, '_aggregate_expected_paralytics_wprone_Status_fullmodel.csv'))
+
+#This Aggregate Data Will be Used for Risk and Reliability Adjusted Paralytic Rate Estimates by Hospital, proning
+#Generate Paralytics Propensity Score whole model (Don't Account for Hospital or proning status Here)
+alt_form <- any_paralytic_48 ~ first_rose_pf_all_scale + ph_715   + dys_rr + dys_mv
+
+alt_mod <- glm(alt_form,
+               data = rose_analytic_df %>% filter(!is.na(hospital_id)), 
+               family=binomial)
+
+#Collect Coefficient and Covariance Matrix for Centralized Creation of Global Coefficient
+propensity_build_estimates <- model_summary_table(alt_mod)
+propensity_build_covariance <- as.data.frame(vcov(alt_mod))
+
+write.csv(propensity_build_estimates, paste0(project_location, '/project_output_UPLOAD/', site, '_propensity_build_estimates_no_proning_fullmodel_nosp.csv'))
+write.csv(propensity_build_covariance, paste0(project_location, '/project_output_UPLOAD/', site, '_propensity_build_covariance_no_proning_fullmodel_nosp.csv'))
+
+#Extract Dataset from Model
+df <- alt_mod$data
+
+#Propensity Score Taken from Prediction
+df$paralytics_propensity <- predict(alt_mod, newdata=df %>% filter(!is.na(hospital_id)), type = 'response')
+
+#Create Aggregate Dataset with Observed and Expected Events as well as N Broken Out by Proning Status
+df_agg_para_prone_status <- df |>
+  group_by(hospital_id, prone_48) |>
+  summarise(
+    n_patients = n(),
+    observed_paralytics = sum(any_paralytic_48, na.rm=TRUE),
+    paralytics_rate_observed = mean(any_paralytic_48, na.rm=TRUE),
+    paralytics_rate_adjust = mean(paralytics_propensity, na.rm = TRUE)
+  ) |>
+  ungroup() |>
+  filter(!is.na(hospital_id)) |>
+  mutate(expected_paralytics=round((paralytics_rate_adjust*n_patients), digits = 0)) |>
+  mutate(not_paralytics=n_patients-observed_paralytics)
+
+#Save CSV
+write.csv(df_agg_para_prone_status, paste0(project_location, '/project_output_UPLOAD/', site, '_aggregate_expected_paralytics_wprone_Status_fullmodel_nosp.csv'))
+
+write_parquet(rose_analytic_df, paste0(project_location, '/project_tables_DO_NOT_UPLOAD/rose_analytic_data_consort.parquet'))
 
 ```
 

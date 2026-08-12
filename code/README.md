@@ -22,4 +22,6 @@ This directory contains scripts for the CLIF_paralytics project workflow. The ge
 
    Output: Tables and figures, collected in project_output_UPLOAD folder as individual files (Tables and figures). The total number depends on site configurations (# of hospitals, # of study periods)
 
+3. Run to 02 script after receiving instructions from primary site. This script utilizes a csv file of global estimates derived from local estimates provided by each site to the primary site. 
+
 

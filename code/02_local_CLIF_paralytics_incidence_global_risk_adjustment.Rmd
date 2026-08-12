@@ -1,0 +1,210 @@
+#Last File to Be Run; Once primary site has Collated Prior Fixed Effects And Distributed Global Estimates
+#Load the Analytic File
+
+
+```{r Load Needed Libraries, include=FALSE}
+packages <- c("lubridate", 
+              "tidyverse", 
+              "dplyr",
+              "tableone", 
+              "readxl", 
+              "arrow", 
+              "collapse", 
+              "data.table",
+              "viridis",
+              "sandwich", #Cluster Robust Standard Errors
+              "lmtest",  #Allows Calculation of Cluster Robust Standard Errors
+               "tibble",
+              "gtsummary",
+              "ggforce", 
+              "yaml", 
+              "rprojroot",
+              "purrr",
+              "broom",
+              "readr",
+              "data.table"
+              ) 
+
+install_if_missing <- function(package) {
+  if (!require(package, character.only = TRUE)) {
+    install.packages(package, dependencies = TRUE)
+    library(package, character.only = TRUE)
+  }
+}
+
+sapply(packages, install_if_missing)
+rm(packages, install_if_missing)
+
+#Use Dplyr select as default
+select <- dplyr::select
+
+{ # Load config to specify local paths
+    cat("Load config to specify local paths\n")
+    # Find project root
+    project_root <- find_root(rprojroot::has_dir("config"))
+    
+    # Read YAML config
+    config <- yaml::read_yaml(file.path(project_root, "config", "config.json"))
+
+    # Assign config values to R variables
+    tables_location <- config$tables_path
+    project_location <- config$project_location
+    site <- config$site_name
+    site_time_zone <- config$time_zone
+    file_type <- config$file_type
+    hospital_names<- config$hospital_names
+  
+    rm(config)
+  } 
+
+#Check timezone
+check_timezone <- function(site_timezone, intended_timezone = Sys.timezone()) {
+  if (site_timezone != intended_timezone) {
+    cat("Warning: You specified", site_timezone, "but your system time zone is", intended_timezone, "\n")
+    response <- readline(prompt = "Was that intentional? (yes/no): ")
+    
+    if (tolower(response) %in% c("no", "n")) {
+      new_timezone <- readline(prompt = "Please enter the correct timezone: ")
+      cat("Timezone updated to", new_timezone, "\n")
+      return(new_timezone)
+    } else {
+      cat("Proceeding with the originally specified timezone:", site_timezone, "\n")
+      return(site_timezone)
+    }
+    
+  } else {
+    cat("Timezone is set to", site_timezone, "\n")
+    return(site_timezone)
+  }
+}
+
+#Time Zone Check
+result <- check_timezone(site_time_zone)
+
+#Create Sub Folders for supplemental files within Project Output Folder
+# Check if the output directory exists; if not, create it
+if (!dir.exists(paste0(project_location, "/project_output_UPLOAD"))) {
+  dir.create(paste0(project_location, "/project_output_UPLOAD"))
+}
+
+```
+
+```{r Function to Convert Datetimes to Local Time Zone}
+#Write Function to Convert Datetime Columns to 'UTC'
+fn.timezone_tolocal <- function(df) {
+  # Get the dataset schema
+  sch <- df$schema
+  #Which Fields are Datetime Types?
+  datetime_fields <- keep(sch$fields, function(field) {
+    grepl("^timestamp", field$type$ToString())
+  })
+  # Extract the names of these datetime columns
+  datetime_cols <- map_chr(datetime_fields, "name")
+  
+  #Now Convert DateTime Columns to Local Timezone
+  df <- df %>%
+    mutate(across(all_of(datetime_cols), ~ cast(.x, arrow::timestamp("us", site_time_zone)))) |>
+    compute()
+}
+```
+
+```{r Load Site-specific analytic data set and Convert to Local Time Zone}
+#NOTE: This Table is Created by the 
+rose_analytic_df <- open_dataset(paste0(project_location, '/project_tables_DO_NOT_UPLOAD/rose_analytic_data_consort.parquet'))
+
+#Apply Function to Convert to Local Timezone
+rose_analytic_df <- fn.timezone_tolocal(rose_analytic_df)
+
+#Bring Into R Environment as Dataframe
+rose_analytic_df <- rose_analytic_df |> collect()
+
+#Load Global Coefficicents
+global_coefficients <- read_csv(paste0(project_root, "/config/global_coefficients_proned.csv"))
+global_coefficients<- global_coefficients %>% select(-...1)
+
+```
+
+```{r Create Estimated Log Odds of Proning and Probability for Each Row}
+#This was the Model of 'Fixed Effects'
+alt_form <- any_paralytic_48 ~ first_rose_pf_all_scale + ph_715  + study_period
+
+paralytic_propensity <- rose_analytic_df |>
+ mutate(
+    #need to make study period dummy variables
+    ph_715_1 = as.integer(ph_715 == "1"),
+    period_0=fifelse(study_period_cat==0, 1, 0),
+    period_1=fifelse(study_period_cat==1, 1, 0),
+    period_2=fifelse(study_period_cat==2, 1, 0),
+    #Now Calculate Model -- on Log odds Scale for EACH row
+    paralytic_log_odds =
+      global_coefficients[["coef_(Intercept)"]] +
+      first_rose_pf_all_scale *
+        global_coefficients[["coef_first_rose_pf_all_scale"]] +
+      ph_715_1 *
+        global_coefficients[["coef_ph_7151"]] +
+      period_1 *
+        global_coefficients[["coef_study_periodPost_ROSE_COVID"]] +
+      period_2 *
+        global_coefficients[["coef_study_periodPost_ROSE_Post_COVID"]],
+    paralytic_propensity = plogis(paralytic_log_odds)
+  )
+```
+
+```{r Last Piece Create a Table with Observed and Expected Proning Counts/Rates by Period and Hospital}
+#This Aggregate Data Will be Used for Risk and Reliability Adjusted Paralytics Rate Estimates by Hospital and Proning Status and Will Use the 'Global' Fixed Effects Estimates
+
+#Each Site Aggregates Data
+#Create Aggregate Dataset with Observed and Expected Events as well as N
+global_agg <- paralytic_propensity |>
+  group_by(hospital_id, prone_48) |>
+  summarise(
+    n_patients = n(),
+    observed_paralytic = sum(any_paralytic_48, na.rm=TRUE),
+    paralytic_rate_observed = mean(any_paralytic_48, na.rm=TRUE),
+    paralytic_rate_adjust = mean(paralytic_propensity, na.rm = TRUE)
+  ) |>
+  ungroup() |>
+  filter(!is.na(hospital_id)) |>
+  mutate(expected_paralytic=round((paralytic_rate_adjust*n_patients), digits = 0)) |>
+  mutate(not_paralytic=n_patients-observed_paralytic)
+
+#Save CSV
+write.csv(global_agg, paste0(project_location, '/project_output_UPLOAD/', site, '_global_aggregate_expected_paralytics.csv'))
+
+
+#Now Risk of Paralysis in Paralyzed and Unparalyzed Groups
+global_agg_by_paralytic <- paralytic_propensity |>
+  group_by(hospital_id, any_paralytic_48) |>
+  summarise(
+    n_patients = n(),
+    observed_paralytic = sum(any_paralytic_48, na.rm=TRUE),
+    paralytic_rate_adjust = mean(paralytic_propensity, na.rm = TRUE)
+  ) |>
+  ungroup() |>
+  filter(!is.na(hospital_id)) |>
+  mutate(expected_paralytic=round((paralytic_rate_adjust*n_patients), digits = 0)) |>
+  mutate(not_paralytic=n_patients-observed_paralytic)
+
+#Save CSV
+write.csv(global_agg_by_paralytic, paste0(project_location, '/project_output_UPLOAD/', site, '_global_aggregate_paralytic_risk_by_outcome.csv'))
+
+#Now Risk of Paralytics in Paralytic and Unparalyzed Groups by Proning status
+global_agg_by_paralytic_prone <- paralytic_propensity |>
+  group_by(hospital_id, any_paralytic_48, prone_48) |>
+  summarise(
+    n_patients = n(),
+    observed_paralytic = sum(any_paralytic_48, na.rm=TRUE),
+    paralytic_rate_adjust = mean(paralytic_propensity, na.rm = TRUE)
+  ) |>
+  ungroup() |>
+  filter(!is.na(hospital_id)) |>
+  mutate(expected_paralytic=round((paralytic_rate_adjust*n_patients), digits = 0)) |>
+  mutate(not_paralytic=n_patients-observed_paralytic)
+
+#Save CSV
+write.csv(global_agg_by_paralytic_prone, paste0(project_location, '/project_output_UPLOAD/', site, '_global_aggregate_paralytic_risk_by_outcome_prone.csv'))
+```
+
+```{r}
+cat('This code is DONE!!! Thank you for your support for this CLIF project!')
+```
