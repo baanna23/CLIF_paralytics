@@ -239,6 +239,8 @@ cleanup(
 #Script below will create an 'encounter_block' variable toto identify admissions at the patient_id level that are linked
 ```{r Identify Hospitalizations in Right Time Frame and Age}
 clif_hospitalization <- clif_hospitalization |>
+   select(patient_id, hospitalization_id, admission_dttm, discharge_dttm,
+          age_at_admission, discharge_name, discharge_category) |>
    mutate(hospitalization_id=as.character(hospitalization_id)) |>
    filter(admission_dttm >= start_date &
    admission_dttm <= end_date) |>
@@ -313,7 +315,7 @@ rm(hospitalizations)
 #To be Thorough Will Keep WARD, ICU and ER Encounters (in case of ED to ICU within one system) -> changed to new location_categories
 inpatient_hospitalization_ids <- clif_adt |>
   mutate(hospitalization_id=as.character(hospitalization_id)) |>
-  inner_join(encounter_blocks %>% select(hospitalization_id, encounter_block), 
+  inner_join(encounter_blocks, 
              by='hospitalization_id') |>
   filter(tolower(location_category) %in% c("ward", "icu", "ed", "stepdown")) |>
   select(encounter_block) |>
@@ -331,7 +333,7 @@ encounter_blocks <- encounter_blocks |>
 
 #Keep Track for Consort Diagram
 patients <- length(unique(clif_hospitalization$patient_id))
-encounters <- length(clif_hospitalization$hospitalization_id)
+encounters <- length(unique(clif_hospitalization$encounter_block))
 cat('\n In', site, 'CLIF data there are', patients,'unique patients with', encounters, 'encounters \n')
 
 consort <- data.frame(
@@ -360,13 +362,16 @@ ever_vent <- clif_respiratory_support |>
 vent <- clif_respiratory_support |> 
     mutate(hospitalization_id=as.character(hospitalization_id)) |>
     semi_join(ever_vent, by='hospitalization_id') |>
-    inner_join(encounter_blocks, by='hospitalization_id') |>
+    inner_join(
+      encounter_blocks,
+      by='hospitalization_id'
+    ) |>
    compute()
 
 #Identify First Vent Start Time and Vent Duration
 #Keep Track for Consort Diagram
 patients <- length(unique(vent$patient_id))
-encounters <- length(unique(vent$hospitalization_id))
+encounters <- length(unique(vent$encounter_block))
 cat('\n Paitents Receiving Mechanical Ventilation: \n  In', site, 'CLIF data there are', patients,'unique patients with', encounters, 'encounters \n')
 
 next_exclusion <- data.frame(
@@ -405,7 +410,7 @@ vent <- vent |>
   collect() |>
   #     If device before is VENT + normal vent things ... its VENT too 
   group_by(patient_id, encounter_block) |>
-  arrange(patient_id, recorded_dttm) |>
+  arrange(encounter_block, recorded_dttm) |>
   mutate(device_category = fifelse(is.na(device_category) & 
                                      lag(tolower(device_category) == "imv") & 
                                      tidal_volume_set > 1 & 
@@ -554,7 +559,7 @@ vent_eligible <- vent_episodes |>
 cat(site, '\n After filtering to patients with >0 hours of MV for First Episode there are,', dim(vent_eligible)[1], 'ventilator episodes among,',length(unique(vent_eligible$hospitalization_id)), 'hospitalizations from',length(unique(vent_eligible$patient_id)), 'patients.')
 
 next_exclusion <- data.frame(
-  encounters = dim(vent_eligible)[1],
+  encounters = length(unique(vent_eligible$encounter_block)),
     patients = length(unique(vent_eligible$patient_id)),
   reason = "actual initial number on IMV after ensuring data in IMV episode"
 )
@@ -588,7 +593,7 @@ cleanup(temp_ids)
 
 trach <- clif_respiratory_support |>
   filter(tracheostomy==1) |>
-  inner_join(cohort_ids, by='hospitalization_id') |>
+  inner_join(cohort_ids, by=c('hospitalization_id')) |>
   select(patient_id, recorded_dttm, encounter_block, tracheostomy) |>
   arrange(patient_id, encounter_block, recorded_dttm) |>
   collect() |>
@@ -613,7 +618,7 @@ vent_eligible <- vent_eligible |>
 cat('\n At', site,',', length(unique(vent_eligible$hospitalization_id[vent_eligible$tracheostomy==1])), 'patient hospitalizations were ventilated via a tracheostomy,', length(unique(vent_eligible$hospitalization_id[vent_eligible$trach_within_24==1])), 'within 24 hours of ventilator start and are thus excluded. \n')
 
 next_exclusion <- data.frame(
-  excluded_encounters = length(unique(vent_eligible$hospitalization_id[vent_eligible$trach_within_24==1])),
+  excluded_encounters = length(unique(vent_eligible$encounter_block[vent_eligible$trach_within_24==1])),
     involved_patients = length(unique(vent_eligible$patient_id[vent_eligible$trach_within_24==1])),
   reason = "trach within 24h"
 )
@@ -670,14 +675,15 @@ osh_transfer <- osh_transfer |>
 
 #Merge Into Vent Eligible
 vent_eligible <- vent_eligible |>
-  left_join(osh_transfer, join_by(patient_id, encounter_block)) 
+  left_join(osh_transfer, join_by(patient_id, encounter_block)) |>
+  mutate(transfer_on_vent = coalesce(transfer_on_vent, 0))
 cleanup(osh_transfer, first_device)
 
 #Describe for Consort
 cat('\n At', site,',', length(unique(vent_eligible$hospitalization_id[vent_eligible$transfer_on_vent==1])), 'patient hospitalizations were from patients who met criteria for having been transfered while on a ventilator and are thus excluded,') 
 
 next_exclusion <- data.frame(
-  excluded_encounters = length(unique(vent_eligible$hospitalization_id[vent_eligible$transfer_on_vent==1])),
+  excluded_encounters = length(unique(vent_eligible$encounter_block[vent_eligible$transfer_on_vent==1])),
     involved_patients = length(unique(vent_eligible$patient_id[vent_eligible$transfer_on_vent==1])),
   reason = "transfer OSH on vent"
 )
@@ -879,8 +885,8 @@ rose_windowed <- vent_data |>
 
 
 next_exclusion <- data.frame(
-  excluded_encounters = length(unique(vent_data$hospitalization_id)) - length(unique(rose_windowed$hospitalization_id)),
-    involved_patients = length(unique(vent_data$patient_id)) - length(unique(rose_windowed$patient_id)),
+  excluded_encounters = length(unique(vent_eligible$encounter_block)) - length(unique(rose_windowed$encounter_block)),
+    involved_patients = length(unique(vent_eligible$patient_id)) - length(unique(rose_windowed$patient_id)),
   reason = "don't have p/f or s/f data"
 )
 
@@ -1391,7 +1397,7 @@ inclusions <- rose_criteria_timing |>
   filter(is.na(criteria)==F)
 
 next_exclusion <- data.frame(
-  excluded_encounters = length(unique(rose_criteria_timing$hospitalization_id)) - length(unique(inclusions$hospitalization_id)),
+  excluded_encounters = length(unique(rose_criteria_timing$encounter_block)) - length(unique(inclusions$encounter_block)),
     involved_patients = length(unique(rose_criteria_timing$patient_id)) - length(unique(inclusions$patient_id)),
   reason = "don't meet ROSE criteria"
 )
@@ -1416,7 +1422,7 @@ inclusions <- final_cohort_rose_rose |>
   filter(total_continuous_para_hours_prior < 3)
 
 next_exclusion <- data.frame(
-  excluded_encounters = length(unique(final_cohort_rose_rose$hospitalization_id)) - length(unique(inclusions$hospitalization_id)),
+  excluded_encounters = length(unique(final_cohort_rose_rose$encounter_block)) - length(unique(inclusions$encounter_block)),
     involved_patients = length(unique(final_cohort_rose_rose$patient_id)) - length(unique(inclusions$patient_id)),
   reason = "3+ hours continuous paralytics before criteria"
 )
@@ -1432,7 +1438,7 @@ inclusions <- final_cohort_rose_rose |>
   filter(is.na(criteria_to_paralytic_i_rose) | intermittent_para0 <3)
 
 next_exclusion <- data.frame(
-  excluded_encounters = length(unique(final_cohort_rose_rose$hospitalization_id)) - length(unique(inclusions$hospitalization_id)),
+  excluded_encounters = length(unique(final_cohort_rose_rose$encounter_block)) - length(unique(inclusions$encounter_block)),
     involved_patients = length(unique(final_cohort_rose_rose$patient_id)) - length(unique(inclusions$patient_id)),
   reason = "3+ intermittent pushes prior to starting"
 )
@@ -1619,7 +1625,10 @@ diagnosis <- clif_hospital_diagnosis |>
 #Age, Discharge Category, Final Admission Dttm, Final Discharge Dttm
 hospitalization_vars <- clif_hospitalization |>
   mutate(hospitalization_id=as.character(hospitalization_id)) |>
-  inner_join(cohort_ids) |>
+  inner_join(
+    cohort_ids |> select(patient_id, encounter_block) |> distinct(),
+    by = c("patient_id", "encounter_block")
+  ) |>
   select(patient_id, encounter_block, age_at_admission, final_admission_dttm, final_discharge_dttm, final_discharge_category) |>
   collect() |>
   mutate(in_hosp_death=fifelse(
@@ -1719,15 +1728,18 @@ code_status <- clif_code_status |>
   group_by(patient_id) |>
   mutate(code_status_category=case_when(code_status_category=="DNR" | code_status_category=="DNAR" ~"No resuscitation, okay with intubation", code_status_category=="DNR/DNI" | code_status_category=="DNAR/DNI"~"No resuscitation, no intubation", code_status_category=="DNI_only"~"Okay with resuscitation, except no intubation", code_status_category=="Full" | code_status_category=="Presume Full"~"Full", code_status_category=="Other"~"Other", code_status_category=="UDNR"~"UDNR", code_status_category=="AND"~"Allow natural death")) |>
   join(cohort_times, how = 'left') |>
-  select(patient_id, start_dttm, code_status_category, code_status_name, t_rose_first, paralytic_time) |>
+  select(patient_id, encounter_block, start_dttm, code_status_category, code_status_name, t_rose_first, paralytic_time) |>
   ungroup()
   
+set.seed(324)
+
 code_status_rose <- code_status |>
   filter(!is.na(start_dttm)) |>
   filter(as.POSIXct(start_dttm, tz="UTC") <=as.POSIXct(t_rose_first, tz="UTC")) |>
-  group_by(patient_id) |>
+  group_by(patient_id, encounter_block) |>
   mutate(time_diff = abs(difftime(start_dttm, t_rose_first))) |>
   filter(time_diff == min(time_diff)) |>
+  slice_max(start_dttm, n=1, with_ties = F) |> #if 2 code status entered at exact same time, randomly select 1
   select(-time_diff, -t_rose_first, -paralytic_time)
 
 code_status_rose <- unique(code_status_rose) #most recently updated code status info at time of meeting rose criteria, if missing then presume full. 
@@ -1739,6 +1751,7 @@ code_status_paralytics <- code_status |>
   mutate(time_diff_paralytics = abs(difftime(start_dttm, paralytic_time))) |>
   filter(time_diff_paralytics == min(time_diff_paralytics)) |>
   select(-time_diff_paralytics, -t_rose_first, -paralytic_time) |>
+  slice_max(start_dttm, n=1, with_ties = F) |> #if 2 code status entered at exact same time, randomly select 1
   rename(code_status_category_paralytics=code_status_category, code_status_name_paralytics=code_status_name)
 
 code_status_paralytics <- unique(code_status_paralytics) #most recently updated code status info at time of meeting rose criteria, if missing then presume full. 
@@ -2153,7 +2166,7 @@ min_rass12 <- rass |>
 
 #max rass for dyssynchrony surrogate 12 h prior nmba
 paralytic_start_time <- cohort_times |>
-  select(patient_id, hospitalization_id, encounter_block, paralytic_time)
+  select(patient_id, encounter_block, paralytic_time)
 
 max_rass12_paralytics <- rass |>
   left_join(paralytic_start_time) |>
@@ -2185,23 +2198,23 @@ cleanup(rass, rass_tmp)
 sbp <- clif_vitals |>
   filter(vital_category %in% c('sbp')) |>
   rename(sbp= vital_value) |>
-  select(-vital_name, -vital_category, -meas_site_name) |>
+  select(-vital_name, -vital_category, -any_of("meas_site_name")) |>
   filter(sbp >= 0 & sbp<250) |>
   collect()
 
 sbp_clean <- sbp %>%
-  group_by(hospitalization_id, recorded_dttm, patient_id, encounter_block) %>%
+  group_by(recorded_dttm, patient_id, encounter_block) %>%
   summarize(sbp_value = min(sbp, na.rm = TRUE), .groups = "drop")
 
 dbp <- clif_vitals |>
   filter(vital_category %in% c('dbp')) |>
   rename(dbp= vital_value) |>
-  select(-vital_name, -vital_category, -meas_site_name) |>
+  select(-vital_name, -vital_category, -any_of("meas_site_name")) |>
   filter(dbp >= 0 & dbp<250) |>
   collect()
 
 dbp_clean <- dbp %>%
-  group_by(hospitalization_id, recorded_dttm, patient_id, encounter_block) %>%
+  group_by(recorded_dttm, patient_id, encounter_block) %>%
   summarize(dbp_value = min(dbp, na.rm = TRUE), .groups = "drop")
 
 bp <- left_join(sbp_clean, dbp_clean) |>
@@ -2211,7 +2224,7 @@ bp <- left_join(sbp_clean, dbp_clean) |>
 map <- clif_vitals |>
   filter(vital_category %in% c('map')) |>
   rename(map= vital_value) |>
-  select(-vital_name, -vital_category, -meas_site_name) |>
+  select(-vital_name, -vital_category, -any_of("meas_site_name")) |>
   filter(map >=0 & map<250) |>
   collect()
 

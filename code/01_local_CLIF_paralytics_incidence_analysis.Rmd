@@ -174,11 +174,17 @@ rose_analytic_df <- rose_analytic_df |>
       para_to_prone = difftime(first_prone_time, paralytic_time, units = "hours"), 
       criteria_to_prone = difftime(first_prone_time, t_rose_first, units = "hours"))
 
-earlyprone<- as.data.frame(table(rose_analytic_df$early_prone, rose_analytic_df$any_paralytic_48))
+earlyprone<- as.data.frame(table(
+  factor(rose_analytic_df$early_prone, levels= 0:1), 
+  factor(rose_analytic_df$any_paralytic_48, levels = 0:1)
+  ))
 earlyprone$label = c("no paralytic or early prone", "early prone, no paralytic", "paralytic not early prone", "early prone on paralytic")
 write.csv(earlyprone, file=paste0(project_location, '/project_output_UPLOAD/', site, '_early_proning_numbers.csv'))
 
-earlyprone<- as.data.frame(table(rose_analytic_df$early_prone, rose_analytic_df$joint_prone_para6))
+earlyprone<- as.data.frame(table(
+  factor(rose_analytic_df$early_prone,  levels = 0:1), 
+  factor(rose_analytic_df$joint_prone_para6, levels = 0:1)
+  ))
 write.csv(earlyprone, file=paste0(project_location, '/project_output_UPLOAD/', site, '_joint_proning_numbers.csv'))
 
 #variables at the time of paralytic initiation - it's initial paralytic time, if not started on paralytics will remove later. 
@@ -238,6 +244,7 @@ inclusions <- rose_analytic_df |>
   filter(year(t_rose_first)<2026)
 
 next_exclusion <- data.frame(
+  encounters = length(unique(inclusions$encounter_block)),
   excluded_encounters = nrow(rose_analytic_df) - nrow(inclusions),
     involved_patients = length(unique(rose_analytic_df$patient_id)) - length(unique(inclusions$patient_id)),
   reason = "2026 data"
@@ -249,9 +256,17 @@ consort <- bind_rows(consort, next_exclusion)
 rose_analytic_df <- rose_analytic_df |>
   filter(year(t_rose_first)<2026)
 
+duplicate_encounter_rows <- nrow(rose_analytic_df) - length(unique(rose_analytic_df$encounter_block))
+
+rose_analytic_df <- rose_analytic_df |>
+  group_by(encounter_block) |>
+  slice_sample(n=1) |>
+  ungroup()
+
 non_unique_encounters <- data.frame(
-  excluded_encounters = nrow(rose_analytic_df) - nrow(count(rose_analytic_df, rose_analytic_df$encounter_block)),
-  reason = "multiple rows 1 hospitalization_id -> needs to come off duplicate list"
+  encounters = nrow(rose_analytic_df),
+  excluded_encounters = duplicate_encounter_rows,
+  reason = "duplicate analytic rows for one encounter block"
 )
 consort <- bind_rows(consort, non_unique_encounters)
 
@@ -263,6 +278,7 @@ rose_analytic_df <- rose_analytic_df |>
   ungroup()
 
 next_exclusion <- data.frame(
+  encounters = nrow(rose_analytic_df),
   excluded_encounters = duplicates - nrow(rose_analytic_df),
   reason = "duplicate patients"
 )
@@ -272,7 +288,9 @@ consort <- bind_rows(consort, next_exclusion)
 cat('At', site, length(unique(rose_analytic_df$patient_id)), 'met cohort eligibility based on ROSE criteria and are included in the final cohort. \n')
 
 for (n in 4:nrow(consort)){
+  if (is.na(consort$encounters[n])){
 consort$encounters[n] = consort$encounters[n-1] - consort$excluded_encounters[n]
+  }
 }
 
 write_csv(consort, paste0(project_location, '/project_output_UPLOAD/', site,'_consort.csv'))
