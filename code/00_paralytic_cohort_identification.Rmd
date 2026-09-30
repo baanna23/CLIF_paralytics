@@ -1471,14 +1471,16 @@ cat('This yields an eligible ROSE cohort of',
 
 #Update Running Table of Cohort IDs
 #List of patient_id, encounter_block, hospitalization_id and vent_start
+#Key on patient_id + encounter_block only (as above), so cohort_ids keeps every hospitalization_id in the block,
+#not just the ROSE hospitalization; prone episodes and ARDS ICD codes read from it
 temp_ids <- final_cohort_rose_rose |>
-  select(patient_id, hospitalization_id, encounter_block) |>
+  select(patient_id, encounter_block) |>
   mutate(in_cohort=1)
 
 #Create a Table Containing the 3 Identifiers c('patient_id', 'hospitalization_id', 'encounter_block')
 cohort_ids <- encounter_blocks |>
   mutate(hospitalization_id=as.character(hospitalization_id)) |>
-  inner_join(temp_ids) |>
+  inner_join(temp_ids, by=c('patient_id', 'encounter_block')) |>
   select(patient_id, hospitalization_id, encounter_block, in_cohort) |>
   collect()
 
@@ -1613,14 +1615,12 @@ diagnosis <- clif_hospital_diagnosis |>
   #  chf_code=fifelse(
    #   grepl('i50', diagnosis_code, ignore.case=T), 1, 0)
     ) |>
-  group_by(hospitalization_id, patient_id, encounter_block) |>
-  mutate(
+  #One row per block: a J80 code on any hospitalization in the block counts
+  group_by(patient_id, encounter_block) |>
+  summarise(
     #1st Definition ARDS Code, doesn't matter if i50 CHF code
-    ards_icd_10 = fifelse(sum(ards_code, na.rm=T) >= 1, 1, 0, 0
-    ))|>
-  ffirst() |>
-  select(patient_id, encounter_block, ards_icd_10) |>
-  distinct()
+    ards_icd_10 = fifelse(sum(ards_code, na.rm=T) >= 1, 1, 0, 0),
+    .groups = 'drop')
 
 #Get Needed Variables from Hospitalization Tables
 #Age, Discharge Category, Final Admission Dttm, Final Discharge Dttm
