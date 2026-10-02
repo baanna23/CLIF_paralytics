@@ -921,7 +921,7 @@ find_first_qualifying <- function(df) {
     second_rose_fio2 = NA_real_,
     second_rose_peep = NA_real_,
     second_rose_mode = NA_character_,
-    criteria         = NA_character_
+    criteria = NA_character_, hospitalization_id = NA_character_
   )
   
   for (i in candidates) {
@@ -935,7 +935,7 @@ find_first_qualifying <- function(df) {
       result$first_rose_fio2 <- row_i$fio2_set
       result$first_rose_peep <- row_i$peep_set
       result$first_rose_mode <- row_i$mode_category
-      result$criteria        <- "pf"
+      result$criteria <- "pf"; result$hospitalization_id <- row_i$hospitalization_id
       return(result)
     }
     
@@ -994,7 +994,7 @@ find_first_qualifying <- function(df) {
         result$second_rose_fio2 <- row_j$fio2_set
         result$second_rose_peep <- row_j$peep_set
         result$second_rose_mode <- row_j$mode_category
-        result$criteria         <- "sf"
+        result$criteria <- "sf"; result$hospitalization_id <- row_i$hospitalization_id
         return(result)
       }
     }
@@ -1005,7 +1005,7 @@ find_first_qualifying <- function(df) {
 
 # ── Step 3: Apply per patient/encounter ─────────────────────────────────────
 rose_criteria_timing <- rose_windowed |>
-  group_by(patient_id, encounter_block, hospitalization_id) |>
+  group_by(patient_id, encounter_block) |>
   group_modify(~ {
     qual <- find_first_qualifying(.x)
     # Return one summary row per group
@@ -1022,7 +1022,7 @@ rose_criteria_timing <- rose_windowed |>
       second_rose_fio2   = qual$second_rose_fio2,
       second_rose_peep   = qual$second_rose_peep,
       second_rose_mode   = qual$second_rose_mode,
-      criteria           = qual$criteria
+      criteria = qual$criteria, hospitalization_id = qual$hospitalization_id
     )
   }) |>
   ungroup()
@@ -1055,7 +1055,7 @@ paralytics_episodes_all_c <- clif_medication_admin_continuous |>
   select(-in_cohort) |>
   left_join(temp_times) |>
   mutate(recorded_dttm=admin_dttm) |>
-  left_join(rose_criteria_timing) |>
+  select(-hospitalization_id) |> left_join(rose_criteria_timing, by = c("patient_id", "encounter_block")) |>
   collect()
   
 paralytics_episodes_c <- paralytics_episodes_all_c |>
@@ -1195,7 +1195,7 @@ paralytics_episodes_all_i <- clif_medication_admin_intermittent |>
   filter(tolower(med_group) %in% c("paralytics", "paralytic")) |>
   left_join(temp_times) |>
   mutate(recorded_dttm=admin_dttm) |>
-  left_join(rose_criteria_timing) |>
+  select(-hospitalization_id) |> left_join(rose_criteria_timing, by = c("patient_id", "encounter_block")) |>
   filter(med_dose >0) |>
   collect()
   
@@ -1471,14 +1471,16 @@ cat('This yields an eligible ROSE cohort of',
 
 #Update Running Table of Cohort IDs
 #List of patient_id, encounter_block, hospitalization_id and vent_start
+#Key on patient_id + encounter_block only (as above), so cohort_ids keeps every hospitalization_id in the block,
+#not just the ROSE hospitalization; prone episodes and ARDS ICD codes read from it
 temp_ids <- final_cohort_rose_rose |>
-  select(patient_id, hospitalization_id, encounter_block) |>
+  select(patient_id, encounter_block) |>
   mutate(in_cohort=1)
 
 #Create a Table Containing the 3 Identifiers c('patient_id', 'hospitalization_id', 'encounter_block')
 cohort_ids <- encounter_blocks |>
   mutate(hospitalization_id=as.character(hospitalization_id)) |>
-  inner_join(temp_ids) |>
+  inner_join(temp_ids, by=c('patient_id', 'encounter_block')) |>
   select(patient_id, hospitalization_id, encounter_block, in_cohort) |>
   collect()
 
@@ -1593,9 +1595,10 @@ cleanup(temp_times, prone_episodes_all, position_output)
 #Generate a Table of ALL Hospitalization IDs (here this Deals with the 'Linked' Encounters)
 temp <- cohort_ids |> select(patient_id, encounter_block, in_cohort)
 
-cohort_hospitalization_ids <- clif_hospitalization |>
+#Use encounter_blocks (every hospitalization_id in the block), not clif_hospitalization (first hospitalization only)
+cohort_hospitalization_ids <- encounter_blocks |>
   mutate(hospitalization_id=as.character(hospitalization_id)) |>
-  inner_join(temp) |>
+  inner_join(temp, by=c('patient_id', 'encounter_block')) |>
   select(patient_id, hospitalization_id, encounter_block, in_cohort) |>
   distinct() |>
   collect()
@@ -1612,14 +1615,12 @@ diagnosis <- clif_hospital_diagnosis |>
   #  chf_code=fifelse(
    #   grepl('i50', diagnosis_code, ignore.case=T), 1, 0)
     ) |>
-  group_by(hospitalization_id, patient_id, encounter_block) |>
-  mutate(
+  #One row per block: a J80 code on any hospitalization in the block counts
+  group_by(patient_id, encounter_block) |>
+  summarise(
     #1st Definition ARDS Code, doesn't matter if i50 CHF code
-    ards_icd_10 = fifelse(sum(ards_code, na.rm=T) >= 1, 1, 0, 0
-    ))|>
-  ffirst() |>
-  select(patient_id, encounter_block, ards_icd_10) |>
-  distinct()
+    ards_icd_10 = fifelse(sum(ards_code, na.rm=T) >= 1, 1, 0, 0),
+    .groups = 'drop')
 
 #Get Needed Variables from Hospitalization Tables
 #Age, Discharge Category, Final Admission Dttm, Final Discharge Dttm
@@ -1641,8 +1642,11 @@ hospitalization_vars <- clif_hospitalization |>
 #Will Use Cohort_ids, but Also a Table of Vent Times and t_enrollment
 temp <- hospitalization_vars |> select(patient_id, encounter_block, final_admission_dttm, final_discharge_dttm)
 temp<- unique(temp)
+#Key cohort_times on patient_id + encounter_block only; its hospitalization_id is the vent hospitalization,
+#which need not match the hospitalization_id of labs/assessments/ADT rows from linked hospitalizations in the block
 cohort_times <- final_cohort_rose_rose |>
-  left_join(temp) |>
+  select(-hospitalization_id) |>
+  left_join(temp, by=c('patient_id', 'encounter_block')) |>
   mutate(paralytic_time = case_when(
     intermittent_para48 >2  & criteria_to_paralytic_c <= 48 ~ pmin(paralytic_start_time_c, paralytic_start_time_i_rose, na.rm = TRUE),
     intermittent_para48 >2  & (is.na(criteria_to_paralytic_c) | criteria_to_paralytic_c > 48) ~ paralytic_start_time_i_rose,
@@ -2246,7 +2250,7 @@ sofa_map <- bp |>
   filter(hospitalization_id %in% cohort_hospitalization_ids$hospitalization_id) |>
   collect() |>
   left_join(cohort_hospitalization_ids,  by = join_by(hospitalization_id, encounter_block, patient_id)) |>
-  left_join(cohort_times,  by = join_by(hospitalization_id, encounter_block, patient_id)) |>
+  left_join(cohort_times,  by = join_by(encounter_block, patient_id)) |>
   #Pick Lowest MAP in 24h prior to enrollment
   filter(as.POSIXct(recorded_dttm)>=as.POSIXct(t_rose_first)-dhours(24) & 
            as.POSIXct(recorded_dttm)<=as.POSIXct(t_rose_first)) |>
