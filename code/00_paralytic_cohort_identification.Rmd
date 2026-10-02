@@ -2,9 +2,6 @@
 title: "cohort_identification_paralytic_use"
 ---
 
-#Specify File Paths, Project Path and Site - SITE SPECIFIC
-#Load the Required CLIF Tables (or if using ARROW/parquet refer to table in situ on storage drive)
-
 ```{r Load Needed Libraries, include=FALSE}
 packages <- c("duckdb", 
               "lubridate", 
