@@ -109,7 +109,7 @@ fn.timezone_tolocal <- function(df) {
 ```
 
 ```{r Load Site-specific analytic data set and Convert to Local Time Zone}
-#NOTE: This Table is Created by the 
+#NOTE: This Table is Created by the prior scripts
 rose_analytic_df <- open_dataset(paste0(project_location, '/project_tables_DO_NOT_UPLOAD/rose_analytic_data_consort.parquet'))
 
 #Apply Function to Convert to Local Timezone
@@ -150,7 +150,7 @@ paralytic_propensity <- rose_analytic_df |>
   )
 ```
 
-```{r Last Piece Create a Table with Observed and Expected Proning Counts/Rates by Period and Hospital}
+```{r Last Piece Create a Table with Observed and Expected Paralytic Counts/Rates by Proning and Hospital}
 #This Aggregate Data Will be Used for Risk and Reliability Adjusted Paralytics Rate Estimates by Hospital and Proning Status and Will Use the 'Global' Fixed Effects Estimates
 
 #Each Site Aggregates Data
