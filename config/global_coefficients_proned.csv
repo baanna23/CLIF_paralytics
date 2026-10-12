@@ -1,2 +1,2 @@
-"","coef_(Intercept)","coef_first_rose_pf_all_scale","coef_ph_7151","coef_study_periodPost-ROSE/COVID","coef_study_periodPost-ROSE/Post-COVID"
-"1",-1.67438175320955,-0.167059056720878,0.0670570549866254,0.323044025838914,-0.277767697165825
+,coef_(Intercept),coef_first_rose_pf_all_scale,coef_ph_7151,coef_study_periodPost_ROSE_COVID,coef_study_periodPost_ROSE_Post_COVID
+1,-1.674381753,-0.167059057,0.067057055,0.323044026,-0.277767697

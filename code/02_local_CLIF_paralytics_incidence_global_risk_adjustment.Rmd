@@ -83,8 +83,8 @@ result <- check_timezone(site_time_zone)
 
 #Create Sub Folders for supplemental files within Project Output Folder
 # Check if the output directory exists; if not, create it
-if (!dir.exists(paste0(project_location, "/project_output_UPLOAD"))) {
-  dir.create(paste0(project_location, "/project_output_UPLOAD"))
+if (!dir.exists(paste0(project_location, "/project_output_UPLOAD_02"))) {
+  dir.create(paste0(project_location, "/project_output_UPLOAD_02"))
 }
 
 ```
@@ -169,7 +169,7 @@ global_agg <- paralytic_propensity |>
   mutate(not_paralytic=n_patients-observed_paralytic)
 
 #Save CSV
-write.csv(global_agg, paste0(project_location, '/project_output_UPLOAD/', site, '_global_aggregate_expected_paralytics.csv'))
+write.csv(global_agg, paste0(project_location, '/project_output_UPLOAD_02/', site, '_global_aggregate_expected_paralytics.csv'))
 
 
 #Now Risk of Paralysis in Paralyzed and Unparalyzed Groups
@@ -186,7 +186,7 @@ global_agg_by_paralytic <- paralytic_propensity |>
   mutate(not_paralytic=n_patients-observed_paralytic)
 
 #Save CSV
-write.csv(global_agg_by_paralytic, paste0(project_location, '/project_output_UPLOAD/', site, '_global_aggregate_paralytic_risk_by_outcome.csv'))
+write.csv(global_agg_by_paralytic, paste0(project_location, '/project_output_UPLOAD_02/', site, '_global_aggregate_paralytic_risk_by_outcome.csv'))
 
 #Now Risk of Paralytics in Paralytic and Unparalyzed Groups by Proning status
 global_agg_by_paralytic_prone <- paralytic_propensity |>
@@ -202,7 +202,7 @@ global_agg_by_paralytic_prone <- paralytic_propensity |>
   mutate(not_paralytic=n_patients-observed_paralytic)
 
 #Save CSV
-write.csv(global_agg_by_paralytic_prone, paste0(project_location, '/project_output_UPLOAD/', site, '_global_aggregate_paralytic_risk_by_outcome_prone.csv'))
+write.csv(global_agg_by_paralytic_prone, paste0(project_location, '/project_output_UPLOAD_02/', site, '_global_aggregate_paralytic_risk_by_outcome_prone.csv'))
 ```
 
 ```{r}

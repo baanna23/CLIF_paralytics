@@ -24,4 +24,8 @@ This directory contains scripts for the CLIF_paralytics project workflow. The ge
 
 3. Run to 02 script after receiving instructions from primary site. This script utilizes a csv file of global estimates derived from local estimates provided by each site to the primary site. 
 
+   Input: global coefficients from config folder and cleaned cohort data from scripts above. 
+
+   Output: 3 tables in project_output_UPLOAD_02 folder
+
 
